@@ -1,0 +1,22 @@
+struct Player {
+    hp: Int,
+    x: Int
+}
+
+fn tick_once(hp: Int) -> Int {
+    return hp - 3;
+}
+
+fn main() -> Int {
+    let hero = Player { hp: 100, x: 0 };
+    let hp1 = tick_once(hero.hp);
+    let hp2 = tick_once(hp1);
+    let hp3 = tick_once(hp2);
+    match hp3 {
+        h if h <= 0 => { return 0; }
+        h => {
+            print(h);
+            return h;
+        }
+    }
+}

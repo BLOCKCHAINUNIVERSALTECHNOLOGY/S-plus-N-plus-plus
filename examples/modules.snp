@@ -1,0 +1,14 @@
+mod math {
+    pub fn double(x: Int) -> Int {
+        return x * 2;
+    }
+    fn unused_private() -> Int {
+        return 0;
+    }
+}
+
+fn main() -> Int {
+    let v = math.double(21);
+    print(v);
+    return v;
+}

@@ -1,0 +1,17 @@
+struct Player {
+    hp: Int,
+    name: String
+}
+
+impl Player {
+    fn heal(self, n: Int) -> Int {
+        return self.hp + n;
+    }
+}
+
+fn main() -> Int {
+    let hero = Player { hp: 50, name: "Aria" };
+    let h = hero.heal(25);
+    print(h);
+    return h;
+}

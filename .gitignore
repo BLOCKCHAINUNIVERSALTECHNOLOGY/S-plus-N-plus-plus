@@ -1,3 +1,25 @@
+# Build artifacts
 /target/
+/tmp/
 
+# Compiled S+N++ bytecode
 *.snpbc
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+*.profraw
+*.profdata
+/coverage/
+
+# Local registry / cache
+.snp-cache/

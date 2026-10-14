@@ -1,0 +1,22 @@
+# Closures with captures — outer locals closed over at creation time
+
+fn main() -> Int {
+    let add1 = fn(x: Int) -> Int {
+        return x + 1;
+    };
+    print(add1(41));
+
+    let base = 10;
+    let add_base = fn(x: Int) -> Int {
+        return x + base;
+    };
+    print(add_base(32));
+
+    let factor = 3;
+    let scale = fn(n: Int) -> Int {
+        return n * factor;
+    };
+    print(scale(14));
+
+    return add_base(32);
+}

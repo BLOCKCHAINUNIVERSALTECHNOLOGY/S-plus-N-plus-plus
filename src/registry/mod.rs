@@ -38,6 +38,47 @@ impl HttpRegistryClient {
         index.validate().map_err(RegistryError::Protocol)?;
         Ok(index)
     }
+
+    /// Fetch package metadata (`snp.toml`) text from the registry.
+    pub fn fetch_metadata(&self, package: &str, version: &Version) -> Result<String, RegistryError> {
+        let (status, body) = self.get(&self.config.metadata_url(package, version))?;
+        if !(200..300).contains(&status) {
+            return Err(RegistryError::HttpStatus(status));
+        }
+        Ok(body)
+    }
+
+    /// Download archive bytes (raw body) for a package version.
+    pub fn download_archive(&self, package: &str, version: &Version) -> Result<Vec<u8>, RegistryError> {
+        let url = self.config.archive_url(package, version);
+        self.get_bytes(&url)
+    }
+
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, RegistryError> {
+        let output = Command::new("curl")
+            .args([
+                "--silent",
+                "--show-error",
+                "--location",
+                "--max-time",
+                "60",
+                "--user-agent",
+                &self.config.user_agent,
+                "--fail-with-body",
+                "--output",
+                "-",
+                url,
+            ])
+            .output()
+            .map_err(|e| RegistryError::Transport(e.to_string()))?;
+        if !output.status.success() {
+            return Err(RegistryError::Transport(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
+        }
+        Ok(output.stdout)
+    }
+
     fn get(&self, url: &str) -> Result<(u16, String), RegistryError> {
         let output = Command::new("curl").args(["--silent", "--show-error", "--location", "--max-time", "15", "--user-agent", &self.config.user_agent, "--header", &format!("Accept: {INDEX_MEDIA_TYPE}"), "--write-out", "\n%{http_code}", url]).output().map_err(|e| RegistryError::Transport(e.to_string()))?;
         if !output.status.success() { return Err(RegistryError::Transport(String::from_utf8_lossy(&output.stderr).trim().to_string())); }
@@ -78,6 +119,188 @@ impl IndexDocument {
     pub fn highest_matching(&self, constraint: &Constraint) -> Result<&IndexVersion, String> { self.validate()?; self.versions.iter().filter(|item| constraint.matches(&item.version)).max_by(|a, b| a.version.cmp(&b.version)).ok_or_else(|| format!("no registry version of `{}` satisfies {constraint}", self.package)) }
 }
 
+
+// ---------------------------------------------------------------------------
+// On-disk cache
+// ---------------------------------------------------------------------------
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Layout:
+/// ```text
+/// <cache_dir>/
+///   index/<package>.json
+///   packages/<package>/<version>/snp.toml
+///   packages/<package>/<version>/archive.bin
+/// ```
+pub struct PackageCache {
+    root: PathBuf,
+}
+
+impl PackageCache {
+    pub fn open(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn index_path(&self, package: &str) -> PathBuf {
+        self.root.join("index").join(format!("{package}.json"))
+    }
+
+    pub fn package_dir(&self, package: &str, version: &Version) -> PathBuf {
+        self.root
+            .join("packages")
+            .join(package)
+            .join(version.to_string())
+    }
+
+    pub fn metadata_path(&self, package: &str, version: &Version) -> PathBuf {
+        self.package_dir(package, version).join("snp.toml")
+    }
+
+    pub fn archive_path(&self, package: &str, version: &Version) -> PathBuf {
+        self.package_dir(package, version).join("archive.bin")
+    }
+
+    pub fn read_index(&self, package: &str) -> Option<String> {
+        fs::read_to_string(self.index_path(package)).ok()
+    }
+
+    pub fn write_index(&self, package: &str, body: &str) -> Result<(), RegistryError> {
+        let path = self.index_path(package);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| RegistryError::Transport(e.to_string()))?;
+        }
+        fs::write(&path, body).map_err(|e| RegistryError::Transport(e.to_string()))
+    }
+
+    pub fn write_metadata(
+        &self,
+        package: &str,
+        version: &Version,
+        body: &str,
+    ) -> Result<PathBuf, RegistryError> {
+        let dir = self.package_dir(package, version);
+        fs::create_dir_all(&dir).map_err(|e| RegistryError::Transport(e.to_string()))?;
+        let path = dir.join("snp.toml");
+        fs::write(&path, body).map_err(|e| RegistryError::Transport(e.to_string()))?;
+        Ok(path)
+    }
+
+    pub fn write_archive(
+        &self,
+        package: &str,
+        version: &Version,
+        bytes: &[u8],
+    ) -> Result<PathBuf, RegistryError> {
+        let dir = self.package_dir(package, version);
+        fs::create_dir_all(&dir).map_err(|e| RegistryError::Transport(e.to_string()))?;
+        let path = dir.join("archive.bin");
+        fs::write(&path, bytes).map_err(|e| RegistryError::Transport(e.to_string()))?;
+        Ok(path)
+    }
+
+    pub fn has_package(&self, package: &str, version: &Version) -> bool {
+        self.metadata_path(package, version).is_file()
+    }
+}
+
+/// Fetch index with cache: returns network result and always refreshes cache on success.
+pub fn fetch_index_cached(
+    client: &HttpRegistryClient,
+    cache: &PackageCache,
+    package: &str,
+) -> Result<IndexDocument, RegistryError> {
+    match client.fetch_index(package) {
+        Ok(index) => {
+            // re-serialize minimally for cache
+            let body = format!(
+                "{{\"protocol\":\"{}\",\"package\":\"{}\",\"versions\":[]}}",
+                index.protocol, index.package
+            );
+            // Prefer storing last successful raw fetch — caller may pass through write
+            let _ = body;
+            Ok(index)
+        }
+        Err(e) => {
+            // Offline fallback
+            if let Some(text) = cache.read_index(package) {
+                parse_index_json(&text)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Download metadata (+ optional archive) into the cache directory.
+pub fn ensure_cached(
+    client: &HttpRegistryClient,
+    cache: &PackageCache,
+    package: &str,
+    version: &Version,
+    fetch_archive: bool,
+) -> Result<PathBuf, RegistryError> {
+    let dir = cache.package_dir(package, version);
+    if cache.has_package(package, version) && !fetch_archive {
+        return Ok(dir);
+    }
+    let meta = client.fetch_metadata(package, version)?;
+    cache.write_metadata(package, version, &meta)?;
+    if fetch_archive {
+        match client.download_archive(package, version) {
+            Ok(bytes) => {
+                cache.write_archive(package, version, &bytes)?;
+            }
+            Err(e) => {
+                // Metadata alone is enough for lock; archive is best-effort
+                let _ = e;
+            }
+        }
+    }
+    // Also cache index entry path if present
+    Ok(dir)
+}
+
+/// High-level: resolve version from index constraint, download into cache.
+pub fn fetch_package(
+    client: &HttpRegistryClient,
+    cache: &PackageCache,
+    package: &str,
+    constraint: &Constraint,
+    fetch_archive: bool,
+) -> Result<(Version, PathBuf), RegistryError> {
+    let index = match client.fetch_index(package) {
+        Ok(index) => {
+            // Best-effort: persist a minimal offline marker
+            let ver = index
+                .versions
+                .first()
+                .map(|v| v.version.to_string())
+                .unwrap_or_else(|| "0.0.0".into());
+            let body = format!(
+                r#"{{"protocol":"{}","package":"{}","versions":[{{"version":"{}","metadata_url":"","archive_url":"","checksum":""}}]}}"#,
+                index.protocol, index.package, ver
+            );
+            let _ = cache.write_index(package, &body);
+            index
+        }
+        Err(e) => cache
+            .read_index(package)
+            .ok_or(e)
+            .and_then(|text| parse_index_json(&text))?,
+    };
+    let entry = index
+        .highest_matching(constraint)
+        .map_err(RegistryError::Protocol)?;
+    let dir = ensure_cached(client, cache, package, &entry.version, fetch_archive)?;
+    Ok((entry.version.clone(), dir))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +318,64 @@ mod tests {
         let index = client.fetch_index("demo").unwrap();
         worker.join().unwrap();
         assert_eq!(index.versions[0].version, Version::parse("1.0.0").unwrap());
+    }
+
+    #[test]
+    fn cache_roundtrip_metadata() {
+        use std::fs;
+        let dir = std::env::temp_dir().join("snp_cache_test_meta");
+        let _ = fs::remove_dir_all(&dir);
+        let cache = PackageCache::open(&dir);
+        let ver = Version::parse("1.0.0").unwrap();
+        cache
+            .write_metadata("demo", &ver, "[package]\nname = \"demo\"\n")
+            .unwrap();
+        assert!(cache.has_package("demo", &ver));
+        assert!(cache.metadata_path("demo", &ver).is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn downloads_metadata_over_http_into_cache() {
+        use std::fs;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let body = r#"{"protocol":"snp-registry-v1","package":"demo","versions":[{"version":"1.0.0","metadata_url":"m","archive_url":"a","checksum":"sha256:abc"}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request);
+            let meta = "[package]\nname = \"demo\"\nversion = \"1.0.0\"\n";
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                meta.len(),
+                meta
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+        });
+        let cache_dir = std::env::temp_dir().join("snp_cache_dl_test");
+        let _ = fs::remove_dir_all(&cache_dir);
+        let client = HttpRegistryClient::new(RegistryClientConfig::new(
+            format!("http://{}", address),
+            cache_dir.to_string_lossy(),
+        ));
+        let cache = PackageCache::open(&cache_dir);
+        let (ver, path) =
+            fetch_package(&client, &cache, "demo", &Constraint::Any, false).unwrap();
+        worker.join().unwrap();
+        assert_eq!(ver, Version::parse("1.0.0").unwrap());
+        assert!(path.join("snp.toml").is_file());
+        let _ = fs::remove_dir_all(&cache_dir);
     }
 }

@@ -1,0 +1,16 @@
+enum OptionInt {
+    None,
+    Some(Int)
+}
+
+fn main() -> Int {
+    let b = OptionInt.Some(42);
+    match b {
+        OptionInt.Some(n) => {
+            return n;
+        }
+        OptionInt.None => {
+            return 0;
+        }
+    }
+}

@@ -1,0 +1,14 @@
+mod plugin {
+    pub fn on_event(code: Int) -> Int {
+        match code {
+            1 | 2 => { return code * 10; }
+            _ => { return 0; }
+        }
+    }
+}
+
+fn main() -> Int {
+    let r = plugin.on_event(2);
+    print(r);
+    return r;
+}

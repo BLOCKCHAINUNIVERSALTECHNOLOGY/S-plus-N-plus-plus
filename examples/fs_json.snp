@@ -1,0 +1,11 @@
+import std.fs;
+import std.json;
+import std.test;
+
+fn main() -> Int {
+    fs_write_text("/tmp/snp_demo.json", json_stringify(list(1, 2, 3)));
+    assert_true(fs_exists("/tmp/snp_demo.json"));
+    let body = fs_read_text("/tmp/snp_demo.json");
+    print(body);
+    return 0;
+}

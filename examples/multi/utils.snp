@@ -1,0 +1,10 @@
+# shared helpers module
+
+fn double(x: Int) -> Int {
+    return x * 2;
+}
+
+fn greet(name: String) {
+    print("hello from utils");
+    print(name);
+}

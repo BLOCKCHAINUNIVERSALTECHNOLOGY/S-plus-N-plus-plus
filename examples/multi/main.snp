@@ -1,0 +1,10 @@
+# multi-file entry — loads utils.snp via `mod utils;`
+
+mod utils;
+
+fn main() -> Int {
+    greet("S+N++");
+    let v = double(21);
+    print(v);
+    return v;
+}

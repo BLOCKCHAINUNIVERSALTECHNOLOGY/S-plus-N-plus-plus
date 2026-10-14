@@ -1,0 +1,11 @@
+fn main() -> Int {
+    match 2 {
+        1 | 2 | 3 => {
+            print(10);
+            return 10;
+        }
+        _ => {
+            return 0;
+        }
+    }
+}

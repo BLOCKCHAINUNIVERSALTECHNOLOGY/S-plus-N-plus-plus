@@ -1,0 +1,12 @@
+# FFI — call host-provided extern "C" functions
+
+extern "C" fn host_abs(x: Int) -> Int;
+extern "C" fn host_clamp(x: Int, lo: Int, hi: Int) -> Int;
+extern "C" fn host_strlen(s: String) -> Int;
+
+fn main() -> Int {
+    print(host_abs(0 - 42));
+    print(host_clamp(100, 0, 50));
+    print(host_strlen("S+N++"));
+    return host_abs(0 - 7);
+}

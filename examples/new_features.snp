@@ -1,0 +1,49 @@
+# S+N++ — control flow & collections demo
+# Suitable for game loops, tools, and systems code
+
+import std.collections;
+
+fn main() -> Int {
+    # --- Unary ---
+    print(-42);
+    print(!false);
+
+    # --- for + break (typical game-loop early exit) ---
+    let hits = 0;
+    for i in 0..1000 {
+        hits = hits + 1;
+        if hits == 5 {
+            break;
+        }
+    }
+    print(hits);          # 5
+
+    # --- for + continue (skip frames / filter) ---
+    let score = 0;
+    for i in 0..10 {
+        if i == 3 {
+            continue;     # skip this frame
+        }
+        score = score + i;
+    }
+    print(score);         # 42
+
+    # --- while + break ---
+    let tick = 0;
+    while true {
+        tick = tick + 1;
+        if tick >= 7 {
+            break;
+        }
+    }
+    print(tick);          # 7
+
+    # --- Indexing (lists & maps) ---
+    let inventory = list(100, 200, 300);
+    print(inventory[1]);  # 200
+
+    let stats = map("hp", 100);
+    print(stats["hp"]);   # 100
+
+    return hits + score + tick;  # 5+42+7 = 54
+}

@@ -1,0 +1,52 @@
+# S+N++ full feature demo — structs, match, for-in, interp, math
+
+import std.collections;
+import std.math;
+import std.string;
+
+struct Player {
+    hp: Int,
+    name: String
+}
+
+fn main() -> Int {
+    # Structs + field access
+    let hero = Player { hp: 100, name: "Aria" };
+    print(hero.name);
+    print(hero.hp);
+
+    # for-in over list
+    let loot = list(10, 20, 30);
+    let total = 0;
+    for item in loot {
+        total = total + item;
+    }
+    print(total);
+
+    # match
+    let code = 2;
+    match code {
+        1 => { print("one"); }
+        2 => { print("two"); }
+        _ => { print("other"); }
+    }
+
+    # string interpolation (simple names)
+    let who = "Aria";
+    print("hero is {who}");
+
+    # math stdlib
+    print(abs(-42));
+    print(max(3, 9));
+    print(min(3, 9));
+
+    # control: break
+    let n = 0;
+    for i in 0..100 {
+        n = n + 1;
+        if n == 4 { break; }
+    }
+    print(n);
+
+    return total + hero.hp + n;
+}

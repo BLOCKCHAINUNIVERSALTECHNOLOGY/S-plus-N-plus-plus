@@ -1,0 +1,11 @@
+import std.test;
+import std.json;
+
+fn main() {
+    let s = json_stringify(42);
+    assert_eq(s, "42");
+    let n = json_parse("99");
+    assert_eq(n, 99);
+    let t = json_stringify(true);
+    assert_eq(t, "true");
+}

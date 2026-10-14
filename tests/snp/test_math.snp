@@ -1,0 +1,8 @@
+import std.test;
+import std.math;
+
+fn main() {
+    assert_eq(abs(0 - 5), 5);
+    assert_eq(min(3, 7), 3);
+    assert_true(max(1, 9) == 9);
+}

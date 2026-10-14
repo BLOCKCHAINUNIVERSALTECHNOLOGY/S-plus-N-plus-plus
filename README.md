@@ -1,6 +1,60 @@
 # S+N++
 
-**S+N++** एक readable, statically-oriented systems language का Rust-based compiler/runtime project है। इसका लक्ष्य सरल syntax, स्पष्ट diagnostics, safe ownership और practical concurrency है।
+**S+N++** **v0.3.1** — a readable, statically-oriented systems language (Rust-based compiler + bytecode VM).
+
+Goals: simple syntax, clear diagnostics, safe ownership, practical concurrency.  
+Light enough for tools & game logic; solid enough for real systems work.
+
+## Project layout
+
+```text
+S-N-/
+├── Cargo.toml          # binary `snp` + library `splusnpp`
+├── README.md
+├── SPEC.md             # language specification
+├── REGISTRY_PROTOCOL.md
+├── docs/
+│   └── ARCHITECTURE.md # pipeline & module map
+├── examples/           # .snp samples
+├── tests/
+│   └── integration.rs  # end-to-end pipeline tests
+└── src/
+    ├── main.rs         # thin CLI entry
+    ├── lib.rs          # crate root + runtime tables
+    ├── ast/            # types, expr, stmt, value
+    ├── lexer/          # tokenizer
+    ├── parser/         # recursive-descent → AST
+    ├── sema/           # typecheck + ownership + definite assignment
+    ├── vm/             # bytecode compiler + stack VM
+    ├── stdlib/         # std.io / string / collections / concurrency
+    ├── package/        # snp.toml, lockfiles, deps
+    ├── registry/       # HTTP registry protocol client
+    ├── cli/            # snp run|check|build|repl|init|lock
+    └── diagnostics/    # structured errors (spans next)
+```
+
+## Quick start
+
+```bash
+cargo test
+cargo build --release
+./target/release/snp run examples/hello.snp
+./target/release/snp run examples/new_features.snp
+```
+
+## Language features (v1)
+
+| Area | Features |
+|------|----------|
+| Types | `Int`, `String`, `Bool`, `Unit`, `List`, `Map`, `Channel`, `Thread`, `&T`, `&mut T` |
+| Control | `if` / `else` / `else if`, `while`, `for i in a..b`, `break`, `continue`, `return` |
+| Ops | arithmetic, comparison, unary `-` / `!`, indexing `xs[i]` / `m["k"]` |
+| Ownership | moves, definite assignment, branch-sensitive init |
+| Concurrency | `spawn`, `join`, `channel`, `send`, `receive` |
+| Stdlib | `std.io`, `std.string`, `std.collections`, `std.concurrency` |
+| Tooling | `snp run` · `check` · `build` · `repl` · `init` · `lock` · `package-check` |
+
+---
 
 ## Version 1.0 milestone
 

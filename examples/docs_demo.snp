@@ -1,0 +1,9 @@
+/// double the input
+fn double(x: Int) -> Int {
+    return x * 2;
+}
+
+/// program entry
+fn main() -> Int {
+    return double(21);
+}

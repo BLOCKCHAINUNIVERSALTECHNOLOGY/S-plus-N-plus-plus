@@ -1,0 +1,18 @@
+struct Player {
+    hp: Int,
+    name: String
+}
+
+fn main() -> Int {
+    let hero = Player { hp: 75, name: "Aria" };
+    match hero {
+        Player { hp: h, name: n } if h < 50 => {
+            print(0);
+            return 0;
+        }
+        Player { hp, name } => {
+            print(hp);
+            return hp;
+        }
+    }
+}

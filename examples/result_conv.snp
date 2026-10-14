@@ -1,0 +1,12 @@
+fn main() -> Int {
+    let r = Result.Ok(7);
+    match r {
+        Result.Ok(n) => {
+            print(n);
+            return n;
+        }
+        Result.Err(msg) => {
+            return 0;
+        }
+    }
+}
