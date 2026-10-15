@@ -24,6 +24,8 @@ pub enum Backend {
     LlvmIr,
     /// Textual WebAssembly (`.wat`) skeleton.
     WasmText,
+    /// Research: human-readable native lowering plan (not executable).
+    NativePlan,
 }
 
 impl Backend {
@@ -32,6 +34,7 @@ impl Backend {
             "bytecode" | "vm" => Some(Self::Bytecode),
             "llvm" | "llvm-ir" | "ll" => Some(Self::LlvmIr),
             "wasm" | "wat" => Some(Self::WasmText),
+            "native" | "native-plan" | "jit-plan" => Some(Self::NativePlan),
             _ => None,
         }
     }
@@ -632,8 +635,9 @@ fn emit_wasm_operand(out: &mut String, op: &MirOperand) -> Result<(), String> {
 
 /// High-level entry: lower program through HIR/MIR and emit chosen backend artifact.
 pub fn emit_from_source(source: &str, backend: Backend) -> Result<String, String> {
-    let program = crate::parser::parse_program(source)?;
+    let mut program = crate::parser::parse_program(source)?;
     crate::stdlib::resolve(&program.imports)?;
+    let _ = crate::sema::expand_trait_defaults(&mut program);
     crate::sema::check_program(&program)?;
     let hir = crate::hir::lower(&program);
     let mut mir = crate::mir::lower(&hir)?;
@@ -648,6 +652,63 @@ pub fn emit_from_source(source: &str, backend: Backend) -> Result<String, String
         }
         Backend::LlvmIr => emit_llvm_ir(&mir),
         Backend::WasmText => emit_wasm_text(&mir),
+        Backend::NativePlan => emit_native_plan(&mir),
+    }
+}
+
+/// Research output: how MIR would lower to native-ish ops (not executable).
+pub fn emit_native_plan(module: &MirModule) -> Result<String, String> {
+    let mut out = String::new();
+    out.push_str("; S+N++ native lowering plan (research, non-executable)\n");
+    out.push_str("; See docs/NATIVE.md — prefer Cranelift for a future real JIT.\n\n");
+    for f in &module.functions {
+        let _ = writeln!(out, "fn {} (params: {:?}) {{", f.name, f.params);
+        for (bi, bb) in f.blocks.iter().enumerate() {
+            let _ = writeln!(out, "  bb{}:", bi);
+            for inst in &bb.stmts {
+                let _ = writeln!(out, "    ; MIR  {:?}", inst);
+                let _ = writeln!(out, "    ; NATIVE ≈ {}", native_hint(inst));
+            }
+            let _ = writeln!(out, "    ; TERM {:?}", bb.terminator);
+            let _ = writeln!(out, "    ; NATIVE ≈ {}", native_term_hint(&bb.terminator));
+        }
+        out.push_str("}\n\n");
+    }
+    out.push_str("; register allocation: linear scan over locals (TODO)\n");
+    out.push_str("; ABI: system-v / win64 TBD for cranelift feature\n");
+    Ok(out)
+}
+
+fn native_hint(inst: &MirInstr) -> String {
+    match inst {
+        MirInstr::Assign { dest, value } => format!("mov %{dest}, {value:?}"),
+        MirInstr::Binary { dest, op, left, right } => {
+            format!("{:?} %{dest}, {left:?}, {right:?}", op)
+        }
+        MirInstr::Unary { dest, op, value } => format!("{:?} %{dest}, {value:?}", op),
+        MirInstr::Call { dest, name, args } => {
+            format!("call {name} -> %{dest}  args={args:?}")
+        }
+        MirInstr::Field { dest, object, field } => {
+            format!("load %{dest}, {object:?}.{field}")
+        }
+        MirInstr::Index { dest, base, index } => {
+            format!("load %{dest}, {base:?}[{index:?}]")
+        }
+        _ => format!("op {inst:?}"),
+    }
+}
+
+fn native_term_hint(t: &MirTerminator) -> String {
+    match t {
+        MirTerminator::Jump(b) => format!("jmp bb{b}"),
+        MirTerminator::Branch {
+            cond,
+            then_bb,
+            else_bb,
+        } => format!("cmp {cond:?}; jc bb{then_bb}; jmp bb{else_bb}"),
+        MirTerminator::Return(v) => format!("ret {v:?}"),
+        MirTerminator::Unreachable => "ud2".into(),
     }
 }
 

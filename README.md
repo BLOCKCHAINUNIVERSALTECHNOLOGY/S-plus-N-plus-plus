@@ -1,6 +1,6 @@
 # S+N++
 
-**S+N++** **v0.3.1** — a readable, statically-oriented systems language (Rust-based compiler + bytecode VM).
+**S+N++** **v0.5.0** — a readable, statically-oriented systems language (Rust-based compiler + bytecode VM).
 
 Goals: simple syntax, clear diagnostics, safe ownership, practical concurrency.  
 Light enough for tools & game logic; solid enough for real systems work.
@@ -29,7 +29,7 @@ S-N-/
     ├── stdlib/         # std.io / string / collections / concurrency
     ├── package/        # snp.toml, lockfiles, deps
     ├── registry/       # HTTP registry protocol client
-    ├── cli/            # snp run|check|build|repl|init|lock
+    ├── cli/            # snp run|check|build|repl|init|lock|lsp|registry-serve
     └── diagnostics/    # structured errors (spans next)
 ```
 
@@ -42,7 +42,7 @@ cargo build --release
 ./target/release/snp run examples/new_features.snp
 ```
 
-## Language features (v1)
+## Language features (v0.5)
 
 | Area | Features |
 |------|----------|
@@ -52,7 +52,8 @@ cargo build --release
 | Ownership | moves, definite assignment, branch-sensitive init |
 | Concurrency | `spawn`, `join`, `channel`, `send`, `receive` |
 | Stdlib | `std.io`, `std.string`, `std.collections`, `std.concurrency` |
-| Tooling | `snp run` · `check` · `build` · `repl` · `init` · `lock` · `package-check` |
+| Language depth | traits, default methods, `where Type: Trait`, borrow diagnostics |
+| Tooling | `snp run` · `check` · `build` · `test` · `bench` · `fmt` · `doc` · `lsp` · `emit-native` · `registry-serve` |
 
 ---
 

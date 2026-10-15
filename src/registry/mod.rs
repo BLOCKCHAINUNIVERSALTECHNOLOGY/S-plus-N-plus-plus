@@ -379,3 +379,164 @@ mod tests {
         let _ = fs::remove_dir_all(&cache_dir);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Local registry hosting (v0.5) — serve protocol from a directory
+// ---------------------------------------------------------------------------
+
+/// Expected layout under `root`:
+/// ```text
+/// root/
+///   packages/
+///     <name>/
+///       <version>/
+///         snp.toml
+///         archive.tar.gz   (optional)
+///   index/
+///     <name>.json          (optional; auto-built if missing)
+/// ```
+pub fn serve_local(root: &std::path::Path, port: u16) -> Result<(), String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let root = root
+        .canonicalize()
+        .map_err(|e| format!("registry root: {e}"))?;
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| format!("bind 127.0.0.1:{port}: {e}"))?;
+    eprintln!("snp registry-serve: http://127.0.0.1:{port}/  (root {})", root.display());
+    eprintln!("protocol {PROTOCOL_VERSION}");
+
+    for stream in listener.incoming() {
+        let mut stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let mut buf = [0u8; 4096];
+        let n = match stream.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let req = String::from_utf8_lossy(&buf[..n]);
+        let line = req.lines().next().unwrap_or("");
+        let path = line.split_whitespace().nth(1).unwrap_or("/");
+        let (status, content_type, body) = handle_registry_request(&root, path);
+        let resp = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(resp.as_bytes());
+        let _ = stream.write_all(&body);
+    }
+    Ok(())
+}
+
+fn handle_registry_request(root: &std::path::Path, path: &str) -> (u16, &'static str, Vec<u8>) {
+    // GET /v1/index/{pkg}.json
+    if let Some(rest) = path.strip_prefix("/v1/index/") {
+        let pkg = rest.trim_end_matches(".json");
+        if pkg.is_empty() || pkg.contains("..") {
+            return (400, "text/plain", b"bad package".to_vec());
+        }
+        let idx_path = root.join("index").join(format!("{pkg}.json"));
+        if idx_path.is_file() {
+            return read_file_resp(&idx_path, INDEX_MEDIA_TYPE);
+        }
+        // auto index from packages/{pkg}/*
+        if let Ok(body) = build_index_json(root, pkg) {
+            return (200, INDEX_MEDIA_TYPE, body.into_bytes());
+        }
+        return (404, "text/plain", b"package not found".to_vec());
+    }
+    // GET /v1/packages/{pkg}/{ver}/snp.toml
+    if let Some(rest) = path.strip_prefix("/v1/packages/") {
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() >= 3 && parts[2] == "snp.toml" {
+            let pkg = parts[0];
+            let ver = parts[1];
+            if pkg.contains("..") || ver.contains("..") {
+                return (400, "text/plain", b"bad path".to_vec());
+            }
+            let p = root.join("packages").join(pkg).join(ver).join("snp.toml");
+            return read_file_resp(&p, METADATA_MEDIA_TYPE);
+        }
+        if parts.len() >= 3 && parts[2] == "download" {
+            let pkg = parts[0];
+            let ver = parts[1];
+            let p = root.join("packages").join(pkg).join(ver).join("archive.tar.gz");
+            if p.is_file() {
+                return read_file_resp(&p, "application/gzip");
+            }
+            // fallback: empty archive marker
+            return (404, "text/plain", b"archive not found".to_vec());
+        }
+    }
+    if path == "/" || path == "/health" {
+        return (
+            200,
+            "text/plain",
+            format!("snp registry {PROTOCOL_VERSION} ok\n").into_bytes(),
+        );
+    }
+    (404, "text/plain", b"not found".to_vec())
+}
+
+fn read_file_resp(path: &std::path::Path, ctype: &'static str) -> (u16, &'static str, Vec<u8>) {
+    match std::fs::read(path) {
+        Ok(b) => (200, ctype, b),
+        Err(_) => (404, "text/plain", b"not found".to_vec()),
+    }
+}
+
+fn build_index_json(root: &std::path::Path, package: &str) -> Result<String, String> {
+    let dir = root.join("packages").join(package);
+    let mut versions = Vec::new();
+    let rd = std::fs::read_dir(&dir).map_err(|e| e.to_string())?;
+    for ent in rd.flatten() {
+        if !ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let ver = ent.file_name().to_string_lossy().to_string();
+        versions.push(format!(
+            r#"{{"version":"{ver}","metadata_url":"/v1/packages/{package}/{ver}/snp.toml","archive_url":"/v1/packages/{package}/{ver}/download","checksum":"","dependencies":[]}}"#
+        ));
+    }
+    if versions.is_empty() {
+        return Err("no versions".into());
+    }
+    Ok(format!(
+        r#"{{"protocol":"{PROTOCOL_VERSION}","package":"{package}","versions":[{}]}}"#,
+        versions.join(",")
+    ))
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn builds_index_from_packages_dir() {
+        let dir = std::env::temp_dir().join(format!("snp-reg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("packages/demo/0.1.0")).unwrap();
+        fs::write(
+            dir.join("packages/demo/0.1.0/snp.toml"),
+            "name = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let json = build_index_json(&dir, "demo").unwrap();
+        assert!(json.contains("demo"));
+        assert!(json.contains("0.1.0"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn health_path() {
+        let dir = std::env::temp_dir().join("snp-reg-empty");
+        let _ = fs::create_dir_all(&dir);
+        let (code, _, body) = handle_registry_request(&dir, "/health");
+        assert_eq!(code, 200);
+        assert!(String::from_utf8_lossy(&body).contains("ok"));
+    }
+}

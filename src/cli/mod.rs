@@ -11,7 +11,7 @@ pub fn run() {
         return;
     }
     if args.len() < 2 {
-        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
+        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp lsp | snp registry-serve [dir] [port] | snp emit-native <file.snp> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
         return;
     }
     if args[1] == "repl" {
@@ -120,6 +120,25 @@ pub fn run() {
         }
         return;
     }
+    if args[1] == "registry-serve" {
+        let dir = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+        let port: u16 = args
+            .get(3)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4873);
+        if let Err(e) = crate::registry::serve_local(std::path::Path::new(dir), port) {
+            eprintln!("registry-serve: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if args[1] == "lsp" {
+        if let Err(e) = crate::lsp::run() {
+            eprintln!("lsp error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args[1] == "fmt" {
         if args.len() < 3 {
             eprintln!("usage: snp fmt <file.snp>");
@@ -167,6 +186,18 @@ pub fn run() {
         Err(error) => { eprintln!("cannot read {}: {error}", source_path.display()); return; }
     };
     match args[1].as_str() {
+        "emit-native" => {
+            match crate::backend::emit_from_source(&source, crate::backend::Backend::NativePlan) {
+                Ok(plan) => {
+                    let out = format!("{}.native.txt", source_path.display());
+                    match fs::write(&out, &plan) {
+                        Ok(()) => println!("wrote {out} ({} bytes)", plan.len()),
+                        Err(e) => eprintln!("cannot write {out}: {e}"),
+                    }
+                }
+                Err(error) => eprintln!("{}", diagnostic(&source, source_path, &error)),
+            }
+        }
         "emit-llvm" => {
             match crate::backend::emit_from_source(&source, crate::backend::Backend::LlvmIr) {
                 Ok(ir) => {
@@ -208,7 +239,10 @@ pub fn run() {
             });
             match result {
                 Ok(()) => println!("ok: valid S+N++ program"),
-                Err(error) => eprintln!("{}", diagnostic(&source, source_path, &error)),
+                Err(error) => {
+                    eprintln!("{}", diagnostic(&source, source_path, &error));
+                    std::process::exit(1);
+                }
             }
         }
         "build" => match crate::loader::load_entry(source_path).and_then(|(program, _)| {
@@ -238,7 +272,10 @@ pub fn run() {
                     println!("program returned {}", show(&value))
                 }
                 Ok(_) => {}
-                Err(error) => eprintln!("{}", diagnostic(&source, source_path, &error)),
+                Err(error) => {
+                    eprintln!("{}", diagnostic(&source, source_path, &error));
+                    std::process::exit(1);
+                }
             }
         }
         command => eprintln!(

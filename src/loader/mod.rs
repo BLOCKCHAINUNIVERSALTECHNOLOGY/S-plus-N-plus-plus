@@ -27,6 +27,7 @@ pub fn load_entry(entry: &Path) -> Result<(Program, Vec<LoadedUnit>), String> {
     let mut units = Vec::new();
     let mut all_structs: Vec<StructDef> = Vec::new();
     let mut all_enums: Vec<crate::ast::EnumDef> = Vec::new();
+    let mut all_traits = Vec::new();
     let mut all_functions: Vec<Function> = Vec::new();
     let mut all_externs: Vec<crate::ast::ExternFn> = Vec::new();
     let mut all_imports: Vec<String> = Vec::new();
@@ -40,6 +41,7 @@ pub fn load_entry(entry: &Path) -> Result<(Program, Vec<LoadedUnit>), String> {
         &mut units,
         &mut all_structs,
         &mut all_enums,
+        &mut all_traits,
         &mut all_functions,
         &mut all_externs,
         &mut all_imports,
@@ -60,6 +62,7 @@ pub fn load_entry(entry: &Path) -> Result<(Program, Vec<LoadedUnit>), String> {
             imports,
             structs: all_structs,
             enums: all_enums,
+            traits: all_traits,
             functions: all_functions,
             externs: all_externs,
         },
@@ -74,6 +77,7 @@ fn load_recursive(
     units: &mut Vec<LoadedUnit>,
     all_structs: &mut Vec<StructDef>,
     all_enums: &mut Vec<crate::ast::EnumDef>,
+    all_traits: &mut Vec<crate::ast::TraitDef>,
     all_functions: &mut Vec<Function>,
     all_externs: &mut Vec<crate::ast::ExternFn>,
     all_imports: &mut Vec<String>,
@@ -113,6 +117,7 @@ fn load_recursive(
                 units,
                 all_structs,
                 all_enums,
+                all_traits,
                 all_functions,
                 all_externs,
                 all_imports,
@@ -136,6 +141,9 @@ fn load_recursive(
     }
     for e in program.enums {
         all_enums.push(e);
+    }
+    for t in program.traits {
+        all_traits.push(t);
     }
     for f in program.functions {
         if !fn_names.insert(f.name.clone()) {
@@ -162,10 +170,11 @@ fn load_recursive(
         path: path.to_path_buf(),
         source,
         program: Program {
-        imports: program.imports,
+            imports: program.imports,
             structs: vec![],
             enums: vec![],
-        functions: vec![],
+            traits: vec![],
+            functions: vec![],
             externs: vec![],
         },
     });
@@ -197,17 +206,17 @@ fn resolve_mod_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
 
 /// Execute a program loaded from a filesystem entry path (supports `mod`).
 pub fn execute_path(entry: &Path) -> Result<crate::ast::Value, String> {
-    let (program, _units) = load_entry(entry)?;
+    let (mut program, _units) = load_entry(entry)?;
     crate::stdlib::resolve(&program.imports)?;
+    crate::sema::expand_trait_defaults(&mut program)?;
     crate::sema::check_program(&program)?;
-    // Re-use VM compile path via temporary source merge is awkward;
-    // compile functions directly.
     execute_program(&program)
 }
 
 pub fn check_path(entry: &Path) -> Result<(), String> {
-    let (program, _) = load_entry(entry)?;
+    let (mut program, _) = load_entry(entry)?;
     crate::stdlib::resolve(&program.imports)?;
+    crate::sema::expand_trait_defaults(&mut program)?;
     crate::sema::check_program(&program)
 }
 

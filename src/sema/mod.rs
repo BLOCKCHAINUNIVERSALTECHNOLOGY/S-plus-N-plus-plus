@@ -1,9 +1,9 @@
 //! S+N++ static type, ownership and definite-assignment checker.
 
-use crate::ast::{EnumDef, Expr, Function, InterpPart, Pattern, Program, Stmt, StructDef, Type};
+use crate::ast::{EnumDef, Expr, Function, InterpPart, Pattern, Program, Stmt, StructDef, Type, TraitDef, Visibility};
 use crate::lexer::Token;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 thread_local! {
     static ENUMS: RefCell<HashMap<String, EnumDef>> = RefCell::new(HashMap::new());
@@ -96,6 +96,16 @@ fn expr_type(
                         args: args.clone(),
                     };
                     return expr_type(&lit, env, sigs, structs);
+                }
+                if let Some(Type::Struct(type_name)) = env.get(base) {
+                    let mut method_args = vec![Expr::Var(base.to_string())];
+                    method_args.extend(args.iter().cloned());
+                    return expr_type(
+                        &Expr::Call(format!("{type_name}.{variant}"), method_args),
+                        env,
+                        sigs,
+                        structs,
+                    );
                 }
                 return Err(format!("unknown function `{n}`"));
             } else {
@@ -544,8 +554,11 @@ fn ownership_expr(
     match expr {
         Expr::Var(name) => {
             if *moved.get(name).unwrap_or(&false) {
+                let ty = env.get(name).map(|t| t.name()).unwrap_or_else(|| "unknown".into());
                 return Err(format!(
-                    "use of moved value `{name}`; use `.clone()` before moving it again"
+                    "borrow error: use of moved value `{name}` (type {ty})
+                     	help: this value was moved earlier and cannot be used again
+                     	help: copyable types (Int, Bool, String) are fine; for structs/lists use a fresh binding"
                 ));
             }
             if move_value && !copyable(env.get(name).unwrap_or(&Type::Unknown)) {
@@ -556,7 +569,19 @@ fn ownership_expr(
             ownership_expr(a, env, moved, false, sigs)?;
             ownership_expr(b, env, moved, false, sigs)?;
         }
-        Expr::Unary(_, e) | Expr::Field(e, _) => ownership_expr(e, env, moved, false, sigs)?,
+        Expr::Unary(_, e) => ownership_expr(e, env, moved, false, sigs)?,
+        Expr::Field(e, field) => {
+            // Accessing a field of a moved struct is still a use of moved value
+            if let Expr::Var(name) = e.as_ref() {
+                if *moved.get(name).unwrap_or(&false) {
+                    return Err(format!(
+                        "borrow error: field `{field}` access on moved value `{name}`
+                         	help: move happened earlier; bind fields before the move if you need them"
+                    ));
+                }
+            }
+            ownership_expr(e, env, moved, false, sigs)?;
+        }
         Expr::Index(base, idx) => {
             ownership_expr(base, env, moved, false, sigs)?;
             ownership_expr(idx, env, moved, false, sigs)?;
@@ -617,9 +642,10 @@ fn ownership_expr(
         }
         Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) => {}
         Expr::MethodCall { receiver, args, .. } => {
-            ownership_expr(receiver, env, moved, false, sigs)?;
+            // Method receiver: move non-copyable self into the call
+            ownership_expr(receiver, env, moved, moved_var(receiver).is_some(), sigs)?;
             for a in args {
-                ownership_expr(a, env, moved, false, sigs)?;
+                ownership_expr(a, env, moved, moved_var(a).is_some(), sigs)?;
             }
         }
         Expr::VariantLit { args, .. } => {
@@ -655,7 +681,8 @@ fn ownership_stmts(
         match s {
             Stmt::Let(name, expr) => {
                 ownership_expr(expr, env, moved, moved_var(expr).is_some(), sigs)?;
-                let ty = Type::Unknown;
+                // Prefer a real type so Int/Bool stay copyable under moves
+                let ty = expr_type(expr, env, sigs, &HashMap::new()).unwrap_or(Type::Unknown);
                 env.insert(name.clone(), ty);
                 moved.insert(name.clone(), false);
             }
@@ -902,6 +929,7 @@ pub fn check(fs: &[Function]) -> Result<(), String> {
         imports: vec![],
         structs: vec![],
         enums: vec![],
+        traits: vec![],
         functions: fs.to_vec(),
         externs: vec![],
     })
@@ -1096,6 +1124,19 @@ fn desugar_expr(
                         args: na,
                     });
                 }
+                // The parser intentionally keeps `value.method(...)` as a
+                // dotted call until semantic analysis can distinguish it
+                // from `module.function(...)`. A local struct variable is a
+                // method receiver; rewrite it to the canonical Type.method
+                // function name and prepend the receiver argument.
+                if let Some(Type::Struct(type_name)) = env.get(base) {
+                    let mut method_args = vec![Expr::Var(base.to_string())];
+                    method_args.extend(na);
+                    return Ok(Expr::Call(
+                        format!("{type_name}.{variant}"),
+                        method_args,
+                    ));
+                }
             }
             Ok(Expr::Call(n.clone(), na))
         }
@@ -1171,6 +1212,156 @@ fn desugar_expr(
 }
 
 
+/// For each `impl Trait for Type`, copy missing methods that have a default body
+/// into `program.functions` as `Type.method`.
+pub fn expand_trait_defaults(program: &mut Program) -> Result<(), String> {
+    let traits: HashMap<String, TraitDef> =
+        program.traits.iter().map(|t| (t.name.clone(), t.clone())).collect();
+    // Which (trait, type) pairs are implemented?
+    let mut impl_pairs: Vec<(String, String)> = Vec::new();
+    for f in &program.functions {
+        if f.module_path.len() == 2 && f.module_path[0] == "__trait__" {
+            let trait_name = f.module_path[1].clone();
+            if let Some((ty, _)) = f.name.rsplit_once('.') {
+                let key = (trait_name, ty.to_string());
+                if !impl_pairs.contains(&key) {
+                    impl_pairs.push(key);
+                }
+            }
+        }
+    }
+    let existing: HashSet<String> = program.functions.iter().map(|f| f.name.clone()).collect();
+    for (trait_name, type_name) in impl_pairs {
+        let Some(tdef) = traits.get(&trait_name) else { continue };
+        for tm in &tdef.methods {
+            let fname = format!("{type_name}.{}", tm.name);
+            if existing.contains(&fname) {
+                continue;
+            }
+            let Some(body) = &tm.default_body else { continue };
+            let mut param_types = tm.param_types.clone();
+            // Fix bare self type to the implementing struct
+            if let Some(p0) = tm.params.first() {
+                if p0 == "self" {
+                    if param_types.is_empty() {
+                        param_types.push(Type::Struct(type_name.clone()));
+                    } else {
+                        param_types[0] = Type::Struct(type_name.clone());
+                    }
+                }
+            }
+            program.functions.push(Function {
+                name: fname.clone(),
+                visibility: Visibility::Public,
+                module_path: vec!["__trait__".into(), trait_name.clone()],
+                params: tm.params.clone(),
+                param_types,
+                return_type: tm.return_type.clone(),
+                type_params: vec![],
+                trait_bounds: vec![],
+                body: body.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// `where Type: Trait` — ensure Type has an `impl Trait for Type`.
+fn check_trait_bounds(program: &Program) -> Result<(), String> {
+    let trait_names: HashSet<String> = program.traits.iter().map(|t| t.name.clone()).collect();
+    // Types that implement each trait
+    let mut impl_map: HashMap<String, HashSet<String>> = HashMap::new();
+    for f in &program.functions {
+        if f.module_path.len() == 2 && f.module_path[0] == "__trait__" {
+            let tr = f.module_path[1].clone();
+            if let Some((ty, _)) = f.name.rsplit_once('.') {
+                impl_map.entry(tr).or_default().insert(ty.to_string());
+            }
+        }
+    }
+    for f in &program.functions {
+        for (ty, tr) in &f.trait_bounds {
+            if !trait_names.contains(tr) {
+                return Err(format!(
+                    "in function `{}`: unknown trait `{tr}` in where-clause",
+                    f.name
+                ));
+            }
+            let ok = impl_map.get(tr).map(|s| s.contains(ty)).unwrap_or(false);
+            if !ok {
+                return Err(format!(
+                    "in function `{}`: where-clause `{ty}: {tr}` not satisfied — no `impl {tr} for {ty}`",
+                    f.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Verify every `impl Trait for Type` covers all trait methods.
+fn check_trait_impls(program: &Program) -> Result<(), String> {
+    let traits: std::collections::HashMap<String, &crate::ast::TraitDef> =
+        program.traits.iter().map(|t| (t.name.clone(), t)).collect();
+    // Collect methods implemented for (trait, type) from functions with module_path sentinel
+    // f.name = "Type.method", f.module_path = ["__trait__", "TraitName"]
+    let mut impls: std::collections::HashMap<(String, String), Vec<String>> =
+        std::collections::HashMap::new();
+    for f in &program.functions {
+        if f.module_path.len() == 2 && f.module_path[0] == "__trait__" {
+            let trait_name = f.module_path[1].clone();
+            // Type is prefix of f.name before last dot
+            if let Some((ty, method)) = f.name.rsplit_once('.') {
+                impls
+                    .entry((trait_name, ty.to_string()))
+                    .or_default()
+                    .push(method.to_string());
+            }
+        }
+    }
+    for ((trait_name, type_name), methods) in &impls {
+        let tdef = traits.get(trait_name).ok_or_else(|| {
+            format!("impl of unknown trait `{trait_name}` for `{type_name}`")
+        })?;
+        for tm in &tdef.methods {
+            if !methods.iter().any(|m| m == &tm.name) {
+                if tm.default_body.is_some() {
+                    continue; // will be filled by expand_trait_defaults
+                }
+                return Err(format!(
+                    "trait `{trait_name}` not fully implemented for `{type_name}`: missing method `{}`",
+                    tm.name
+                ));
+            }
+        }
+        // arity / return type soft check
+        for tm in &tdef.methods {
+            let fname = format!("{type_name}.{}", tm.name);
+            if let Some(f) = program.functions.iter().find(|f| f.name == fname) {
+                // self + extra params
+                let expected_params = tm.params.len();
+                if f.params.len() != expected_params {
+                    return Err(format!(
+                        "method `{fname}` for trait `{trait_name}` expects {} param(s), got {}",
+                        expected_params,
+                        f.params.len()
+                    ));
+                }
+                if f.return_type != tm.return_type
+                    && f.return_type != crate::ast::Type::Unknown
+                    && tm.return_type != crate::ast::Type::Unknown
+                {
+                    return Err(format!(
+                        "method `{fname}` return type mismatch for trait `{trait_name}`"
+                    ));
+                }
+            }
+        }
+    }
+    // Also: if someone wrote `impl Trait for T` but trait has methods and none registered — caught above
+    Ok(())
+}
+
 pub fn check_program(program: &Program) -> Result<(), String> {
     let mut structs = HashMap::new();
     for s in &program.structs {
@@ -1226,6 +1417,9 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             (e.param_types.clone(), e.return_type.clone()),
         );
     }
+    check_trait_impls(program)?;
+    check_trait_bounds(program)?;
+
     for f in &program.functions {
         CURRENT_MODULE.with(|cell| {
             *cell.borrow_mut() = f.module_path.clone();

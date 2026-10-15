@@ -1,0 +1,25 @@
+struct Player {
+    hp: Int
+}
+
+trait Healable {
+    fn heal(self, n: Int) -> Int;
+    fn touch(self) -> Int {
+        return self.hp;
+    }
+}
+
+impl Healable for Player {
+    fn heal(self, n: Int) -> Int {
+        return self.hp + n;
+    }
+}
+
+fn main() -> Int {
+    let p = Player { hp: 40 };
+    let a = Player.heal(p, 10);
+    let b = Player.touch(Player { hp: 40 });
+    print(a);
+    print(b);
+    return a + b;
+}

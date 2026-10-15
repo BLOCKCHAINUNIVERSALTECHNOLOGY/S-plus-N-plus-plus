@@ -1,7 +1,7 @@
 //! S+N++ recursive-descent parser.
 
 use crate::ast::{
-    Expr, Function, InterpPart, MatchArm, Pattern, Program, Stmt, StructDef, Type, Visibility,
+    Expr, Function, InterpPart, MatchArm, Pattern, Program, Stmt, StructDef, Type, Visibility, TraitDef, TraitMethod,
 };
 use crate::diagnostics::{offset_to_loc, SourceLoc};
 use crate::lexer::{SpannedToken, Token};
@@ -80,12 +80,14 @@ impl<'a> Parser<'a> {
         let mut imports = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut traits = Vec::new();
         let mut functions = Vec::new();
         let mut externs = Vec::new();
         self.parse_items(
             &mut imports,
             &mut structs,
             &mut enums,
+            &mut traits,
             &mut functions,
             &mut externs,
             &[],
@@ -96,6 +98,7 @@ impl<'a> Parser<'a> {
             imports,
             structs,
             enums,
+            traits,
             functions,
             externs,
         })
@@ -106,6 +109,7 @@ impl<'a> Parser<'a> {
         imports: &mut Vec<String>,
         structs: &mut Vec<StructDef>,
         enums: &mut Vec<crate::ast::EnumDef>,
+        traits: &mut Vec<TraitDef>,
         functions: &mut Vec<Function>,
         externs: &mut Vec<crate::ast::ExternFn>,
         module_path: &[String],
@@ -155,6 +159,15 @@ impl<'a> Parser<'a> {
                     }
                     enums.push(e);
                 }
+                Token::Trait => {
+                    let mut t = self.trait_def()?;
+                    t.visibility = vis;
+                    t.module_path = module_path.to_vec();
+                    if !module_path.is_empty() {
+                        t.name = format!("{}.{}", module_path.join("."), t.name);
+                    }
+                    traits.push(t);
+                }
                 Token::Fn => {
                     let mut f = self.function()?;
                     f.visibility = vis;
@@ -197,6 +210,7 @@ impl<'a> Parser<'a> {
                             imports,
                             structs,
                             enums,
+                            traits,
                             functions,
                             externs,
                             &path,
@@ -214,7 +228,7 @@ impl<'a> Parser<'a> {
                 }
                 other => {
                     return Err(self.err(format!(
-                        "expected import, struct, enum, fn, extern, impl or mod, got {:?}",
+                        "expected import, struct, enum, trait, fn, extern, impl or mod, got {:?}",
                         other
                     )));
                 }
@@ -225,21 +239,30 @@ impl<'a> Parser<'a> {
 
     /// `extern "C" fn name(a: Int, b: Int) -> Int;`
     
-    /// `impl Player { fn heal(self, n: Int) -> Player { ... } }`
-    /// Lowers to functions named `Player.heal` with `self: Player` as first param.
+    /// `impl Player { ... }` or `impl Drawable for Player { ... }`
+    /// Methods lower to `Player.method` with self: Player.
     fn impl_block(&mut self) -> Result<Vec<Function>, String> {
         self.eat(Token::Impl)?;
-        let type_name = match self.bump() {
+        let first = match self.bump() {
             Token::Ident(n) => n,
-            _ => return Err(self.err("expected type name after `impl`")),
+            _ => return Err(self.err("expected type or trait name after `impl`")),
+        };
+        let (type_name, trait_name) = if *self.current() == Token::For {
+            self.bump();
+            let ty = match self.bump() {
+                Token::Ident(n) => n,
+                _ => return Err(self.err("expected type name after `impl Trait for`")),
+            };
+            (ty, Some(first))
+        } else {
+            (first, None)
         };
         self.eat(Token::LBrace)?;
         let mut methods = Vec::new();
         while *self.current() != Token::RBrace && *self.current() != Token::Eof {
             let mut f = self.function()?;
-            // Ensure first param is self with struct type if named self
-            if let Some(first) = f.params.first() {
-                if first == "self" {
+            if let Some(first_p) = f.params.first() {
+                if first_p == "self" {
                     if f.param_types.is_empty() {
                         f.param_types.push(Type::Struct(type_name.clone()));
                     } else {
@@ -247,11 +270,92 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // Name: Type.method (dispatch stays the same; trait checked in sema)
             f.name = format!("{}.{}", type_name, f.name);
+            // Stash trait name in module_path sentinel if present: ["__trait__", TraitName]
+            if let Some(tn) = &trait_name {
+                f.module_path = vec!["__trait__".into(), tn.clone()];
+            }
             methods.push(f);
         }
         self.eat(Token::RBrace)?;
         Ok(methods)
+    }
+
+    /// `trait Drawable { fn draw(self) -> Int; }` — signatures only (semicolon body).
+    fn trait_def(&mut self) -> Result<TraitDef, String> {
+        self.eat(Token::Trait)?;
+        let name = match self.bump() {
+            Token::Ident(n) => n,
+            _ => return Err(self.err("expected trait name")),
+        };
+        self.eat(Token::LBrace)?;
+        let mut methods = Vec::new();
+        while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+            // optional pub on method (ignored for now — all trait methods public)
+            if *self.current() == Token::Pub {
+                self.bump();
+            }
+            self.eat(Token::Fn)?;
+            let mname = match self.bump() {
+                Token::Ident(n) => n,
+                _ => return Err(self.err("expected method name in trait")),
+            };
+            self.eat(Token::LParen)?;
+            let mut params = Vec::new();
+            let mut param_types = Vec::new();
+            if *self.current() != Token::RParen {
+                loop {
+                    let pname = match self.bump() {
+                        Token::Ident(n) => n,
+                        _ => return Err(self.err("expected parameter name in trait method")),
+                    };
+                    params.push(pname);
+                    if *self.current() == Token::Colon {
+                        self.bump();
+                        param_types.push(self.parse_type()?);
+                    } else {
+                        // bare `self` → Unknown, filled later
+                        param_types.push(Type::Unknown);
+                    }
+                    if *self.current() == Token::Comma {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            self.eat(Token::RParen)?;
+            let return_type = if *self.current() == Token::Arrow {
+                self.bump();
+                self.parse_type()?
+            } else {
+                Type::Unit
+            };
+            // `;` = required abstract method; `{ ... }` = default implementation
+            let default_body = if *self.current() == Token::LBrace {
+                // Match `function()`: eat `{`, then `block()` reads stmts + closing `}`
+                self.eat(Token::LBrace)?;
+                Some(self.block()?)
+            } else {
+                self.eat(Token::Semi)?;
+                None
+            };
+            methods.push(TraitMethod {
+                name: mname,
+                params,
+                param_types,
+                return_type,
+                default_body,
+            });
+        }
+        self.eat(Token::RBrace)?;
+        Ok(TraitDef {
+            name,
+            visibility: Visibility::Public,
+            module_path: vec![],
+            methods,
+        })
     }
 
 fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
@@ -487,9 +591,41 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
         } else {
             Type::Unit
         };
+        // `where Type: Trait, ...`
+        let mut trait_bounds = Vec::new();
+        if *self.current() == Token::Where {
+            self.bump();
+            loop {
+                let ty = match self.bump() {
+                    Token::Ident(n) => n,
+                    _ => return Err(self.err("expected type name in where-clause")),
+                };
+                self.eat(Token::Colon)?;
+                let tr = match self.bump() {
+                    Token::Ident(n) => n,
+                    _ => return Err(self.err("expected trait name after `:` in where-clause")),
+                };
+                trait_bounds.push((ty, tr));
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
         self.eat(Token::LBrace)?;
         let body = self.block()?;
-        Ok(Function { name, visibility: Visibility::Public, module_path: vec![], params, param_types, return_type, type_params, body })
+        Ok(Function {
+            name,
+            visibility: Visibility::Public,
+            module_path: vec![],
+            params,
+            param_types,
+            return_type,
+            type_params,
+            trait_bounds,
+            body,
+        })
     }
 
     fn block(&mut self) -> Result<Vec<Stmt>, String> {

@@ -49,7 +49,13 @@ impl Type {
     pub fn is_copyable(&self) -> bool {
         matches!(
             self,
-            Type::Int | Type::Bool | Type::Unit | Type::Channel | Type::Thread | Type::Generic(_)
+            Type::Int
+                | Type::Bool
+                | Type::Str
+                | Type::Unit
+                | Type::Channel
+                | Type::Thread
+                | Type::Generic(_)
         )
     }
 
@@ -217,6 +223,25 @@ pub enum Visibility {
     Private,
 }
 
+/// Trait definition: `trait Drawable { fn draw(self) -> Int; }`
+#[derive(Debug, Clone)]
+pub struct TraitDef {
+    pub name: String,
+    pub visibility: Visibility,
+    pub module_path: Vec<String>,
+    pub methods: Vec<TraitMethod>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<String>,
+    pub param_types: Vec<Type>,
+    pub return_type: Type,
+    /// Optional default body: `fn foo(self) -> Int { return 0; }` inside trait
+    pub default_body: Option<Vec<Stmt>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
@@ -228,6 +253,8 @@ pub struct Function {
     pub return_type: Type,
     /// Optional type parameters: `fn id[T](x: T) -> T`
     pub type_params: Vec<String>,
+    /// `where Player: Healable` — type must implement trait
+    pub trait_bounds: Vec<(String, String)>,
     pub body: Vec<Stmt>,
 }
 
@@ -353,6 +380,7 @@ pub struct Program {
     pub imports: Vec<String>,
     pub structs: Vec<StructDef>,
     pub enums: Vec<EnumDef>,
+    pub traits: Vec<TraitDef>,
     pub functions: Vec<Function>,
     pub externs: Vec<ExternFn>,
 }

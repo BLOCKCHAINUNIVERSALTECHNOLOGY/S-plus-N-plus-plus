@@ -1,0 +1,23 @@
+struct Player {
+    hp: Int
+}
+
+trait Healable {
+    fn heal(self, n: Int) -> Int;
+}
+
+impl Healable for Player {
+    fn heal(self, n: Int) -> Int {
+        return self.hp + n;
+    }
+}
+
+fn apply(p: Player) -> Int where Player: Healable {
+    return Player.heal(p, 5);
+}
+
+fn main() -> Int {
+    let out = apply(Player { hp: 20 });
+    print(out);
+    return out;
+}

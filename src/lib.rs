@@ -27,6 +27,7 @@ pub mod mir;
 pub mod backend;
 pub mod ffi;
 pub mod fmtutil;
+pub mod lsp;
 pub mod lexer;
 pub mod loader;
 pub mod package;
@@ -63,5 +64,5 @@ pub use ffi::{
 };
 
 /// Language / toolchain version.
-pub const VERSION: &str = "0.3.1";
+pub const VERSION: &str = "0.5.0";
 

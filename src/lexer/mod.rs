@@ -4,7 +4,7 @@
 pub enum Token {
     // Keywords
     Fn, Let, If, Else, While, For, In, Return, Break, Continue,
-    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub,
+    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where,
     // Literals & identifiers
     Ident(String), Int(i64), Str(String),
     // Operators
@@ -43,6 +43,10 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
             while i < chars.len() && chars[i] != '\n' { i += 1; }
             continue;
         }
+        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
+            while i < chars.len() && chars[i] != '\n' { i += 1; }
+            continue;
+        }
         if c.is_ascii_digit() {
             let s = i;
             while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
@@ -63,7 +67,7 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
                 "in" => Token::In, "return" => Token::Return, "break" => Token::Break,
                 "continue" => Token::Continue, "true" => Token::True, "false" => Token::False,
                 "mut" => Token::Mut, "import" => Token::Import, "struct" => Token::Struct,
-                "match" => Token::Match, "mod" => Token::Mod, "extern" => Token::Extern, "impl" => Token::Impl, "enum" => Token::Enum, "pub" => Token::Pub,
+                "match" => Token::Match, "mod" => Token::Mod, "extern" => Token::Extern, "impl" => Token::Impl, "enum" => Token::Enum, "pub" => Token::Pub, "trait" => Token::Trait, "where" => Token::Where,
                 _ => Token::Ident(word),
             };
             out.push(SpannedToken { token, start: s, end: i });

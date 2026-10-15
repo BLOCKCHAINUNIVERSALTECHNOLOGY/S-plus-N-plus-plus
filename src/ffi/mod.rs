@@ -52,8 +52,11 @@ use crate::ast::Value;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-#[cfg(test)]
-static TEST_REGISTRY_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes registry swap + execute (tests / multi-engine embedders).
+fn exec_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// Host callback signature — safe Rust, no raw pointers required.
 pub type HostFn = fn(&[Value]) -> Result<Value, String>;
@@ -222,6 +225,7 @@ pub fn execute_with_hosts(
     source: &str,
     hosts: &[(&str, HostFn)],
 ) -> Result<Value, String> {
+    let _guard = exec_lock().lock().expect("ffi exec lock");
     for (name, f) in hosts {
         register_host(*name, *f);
     }
@@ -254,23 +258,15 @@ mod tests {
 
     #[test]
     fn embedder_register_and_call() {
-        let _guard = TEST_REGISTRY_LOCK.lock().unwrap();
-        reset_registry();
-        register_host("damage", damage);
-        assert!(has_host("damage"));
-        let hosts = list_hosts();
-        assert!(hosts.iter().any(|h| h == "damage"));
-
         let out = execute_with_hosts(
             r#"
                 extern "C" fn damage(base: Int, mult: Int) -> Int;
                 fn main() -> Int { return damage(10, 3); }
             "#,
-            &[], // already registered
+            &[("damage", damage)],
         )
         .unwrap();
         assert_eq!(out, Value::Int(30));
-        reset_registry();
     }
 
     #[test]
@@ -335,6 +331,7 @@ impl Engine {
 
     /// Run source with this engine's hosts temporarily installed.
     pub fn execute(&self, src: &str) -> Result<Value, String> {
+        let _guard = exec_lock().lock().expect("ffi exec lock");
         crate::vm::set_runtime_limits(self.max_call_depth, self.max_stack_depth);
         reset_registry();
         for (name, f) in &self.hosts {
@@ -359,7 +356,6 @@ mod engine_tests {
 
     #[test]
     fn engine_isolate_registers() {
-        let _guard = super::TEST_REGISTRY_LOCK.lock().unwrap();
         let mut eng = Engine::new();
         eng.register("times2", times2);
         let out = eng
