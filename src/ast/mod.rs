@@ -40,6 +40,8 @@ pub enum Type {
     Enum(String),
     /// Generic type parameter name (lightweight generics)
     Generic(String),
+    /// Tuple type: (Int, String)
+    Tuple(Vec<Type>),
     Ref(Box<Type>),
     MutRef(Box<Type>),
     Unknown,
@@ -56,6 +58,7 @@ impl Type {
                 | Type::Channel
                 | Type::Thread
                 | Type::Generic(_)
+                | Type::Tuple(_)
         )
     }
 
@@ -74,6 +77,10 @@ impl Type {
             Type::Struct(n) => n.clone(),
             Type::Enum(n) => n.clone(),
             Type::Generic(n) => n.clone(),
+            Type::Tuple(ts) => {
+                let inner = ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ");
+                format!("({inner})")
+            }
             Type::Ref(inner) => format!("&{}", inner.name()),
             Type::MutRef(inner) => format!("&mut {}", inner.name()),
             Type::Unknown => "<unknown>".into(),
@@ -128,6 +135,30 @@ pub enum Expr {
         variant: String,
         args: Vec<Expr>,
     },
+    /// `expr?` — unwrap Result.Ok or early-return Result.Err
+    Try(Box<Expr>),
+    /// Expression if: `if cond { then } else { else_ }` (both branches are expressions)
+    IfExpr {
+        cond: Box<Expr>,
+        then_branch: Box<Expr>,
+        else_branch: Box<Expr>,
+    },
+    /// Expression match: `match e { pat => expr, ... }` (desugars to IIFE + stmt match)
+    MatchExpr {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchExprArm>,
+    },
+    /// Pipeline hole `_` — filled by `|>` left value
+    Hole,
+    /// Tuple literal: `(a, b, c)`
+    Tuple(Vec<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchExprArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub value: Expr,
 }
 
 
@@ -167,6 +198,8 @@ pub enum Pattern {
     },
     /// `1 | 2 | 3` or `Red | Blue` — alternatives (no bindings across arms for v0.3)
     Or(Vec<Pattern>),
+    /// `(a, b)` tuple pattern
+    Tuple(Vec<Pattern>),
 }
 
 /// Enum definition: `enum Option { None, Some(Int) }`
@@ -200,11 +233,15 @@ pub enum Stmt {
         var: String,
         start: Expr,
         end: Expr,
+        /// `true` for `start..=end` (inclusive end)
+        inclusive: bool,
         body: Vec<Stmt>,
     },
     /// `for item in collection`
     ForIn {
         var: String,
+        /// Optional index binding: `for (i, x) in xs`
+        index: Option<String>,
         iter: Expr,
         body: Vec<Stmt>,
     },
@@ -213,8 +250,19 @@ pub enum Stmt {
         scrutinee: Expr,
         arms: Vec<MatchArm>,
     },
+    /// `if let PATTERN = expr { yes } else { no }`
+    IfLet {
+        pattern: Pattern,
+        value: Expr,
+        yes: Vec<Stmt>,
+        no: Vec<Stmt>,
+    },
     Break,
     Continue,
+    /// `const NAME = expr;` (compile-time literal preferred)
+    Const(String, Expr),
+    /// `defer { stmts }` — run LIFO at scope exit / before return
+    Defer(Vec<Stmt>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,6 +342,8 @@ pub enum Value {
         name: String,
         captures: BTreeMap<String, Value>,
     },
+    /// Tuple value
+    Tuple(Vec<Value>),
 }
 
 impl Value {
@@ -310,6 +360,7 @@ impl Value {
             Value::Struct { name, .. } => Type::Struct(name.clone()),
             Value::Enum { name, .. } => Type::Enum(name.clone()),
             Value::Closure { .. } => Type::Unknown, // function type later
+            Value::Tuple(items) => Type::Tuple(items.iter().map(|v| v.type_of()).collect()),
         }
     }
 
@@ -347,6 +398,14 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             Value::Closure { name, captures } => write!(f, "closure({name}, caps={})", captures.len()),
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, it) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{it}")?;
+                }
+                write!(f, ")")
+            }
             Value::Enum { name, variant, fields } => {
                 write!(f, "{name}.{variant}")?;
                 if !fields.is_empty() {
@@ -383,4 +442,16 @@ pub struct Program {
     pub traits: Vec<TraitDef>,
     pub functions: Vec<Function>,
     pub externs: Vec<ExternFn>,
+    /// Top-level `const NAME = value;`
+    pub consts: Vec<(String, Expr)>,
+    /// `use path.to.name` or `use path.{a, b}` → local aliases
+    pub uses: Vec<UseDecl>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UseDecl {
+    /// Full path segments, e.g. ["combat", "heal"] or ["combat"] with names
+    pub path: Vec<String>,
+    /// If non-empty, brace form: use combat.{heal, damage}
+    pub names: Vec<String>,
 }

@@ -1,0 +1,16 @@
+// S+N++ 0.9 — inclusive range, if let, Option
+fn main() -> Int {
+    let sum = 0;
+    for i in 1..=5 {
+        sum = sum + i;
+    }
+    let opt = Option.Some(sum);
+    if let Option.Some(n) = opt {
+        assert(n == 15, "1..=5 sums to 15");
+        print(n);
+        return n;
+    } else {
+        panic("missing");
+        return 0;
+    }
+}

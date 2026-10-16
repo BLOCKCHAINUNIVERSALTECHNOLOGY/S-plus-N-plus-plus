@@ -1,0 +1,22 @@
+// S+N++ 0.6 impact pack demo
+const SCALE = 2;
+
+fn maybe_score(ok: Bool) -> Int {
+    if ok {
+        return Result.Ok(21)?;
+    } else {
+        let e = Result.Err("nope");
+        return e?;
+    }
+}
+
+fn main() -> Int {
+    let xs = list(1, 2, 3, 4, 5);
+    let doubled = list_map(xs, fn(x: Int) -> Int { return x * SCALE; });
+    let big = list_filter(doubled, fn(x: Int) -> Bool { return x >= 6; });
+    let total = list_fold(big, 0, fn(a: Int, b: Int) -> Int { return a + b; });
+    print(total);
+    let s = maybe_score(true);
+    print(s);
+    return total + s;
+}

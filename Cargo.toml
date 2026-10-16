@@ -1,28 +1,12 @@
 [package]
 name = "splusnpp"
-version = "0.5.0"
+version = "2.5.0"
 edition = "2021"
 description = "S+N++ — a readable, statically-oriented systems language with safe ownership and practical concurrency"
 license = "MIT"
-authors = ["Sanjay Nain <sanjaynain754@users.noreply.github.com>"]
-repository = "https://github.com/sanjaynain754/S-N-"
-readme = "README.md"
-keywords = ["language", "compiler", "vm", "systems", "concurrency"]
-categories = ["compilers", "development-tools"]
 
 [[bin]]
 name = "snp"
 path = "src/main.rs"
 
-[lib]
-name = "splusnpp"
-path = "src/lib.rs"
-
 [dependencies]
-# Currently zero external dependencies — intentional for a self-contained compiler/runtime.
-
-[profile.release]
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true

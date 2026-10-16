@@ -183,6 +183,11 @@ fn emit_llvm_instr(
     idx: usize,
 ) -> Result<(), String> {
     match instr {
+        MirInstr::Try { dest, value } => {
+            // research: try is VM-only; emit load
+            let v = operand_llvm(out, value, bb, idx)?;
+            writeln!(out, "  store i64 {v}, i64* %{}.addr, align 8", sanitize(dest)).unwrap();
+        }
         MirInstr::Assign { dest, value } => {
             let v = operand_llvm(out, value, bb, idx)?;
             writeln!(
@@ -479,6 +484,10 @@ fn emit_wasm_block_body(
 ) -> Result<(), String> {
     for (idx, instr) in bb.stmts.iter().enumerate() {
         match instr {
+            MirInstr::Try { dest, value } => {
+                emit_wasm_operand(out, value)?;
+                writeln!(out, "        (local.set ${})", sanitize(dest)).unwrap();
+            }
             MirInstr::Assign { dest, value } => {
                 emit_wasm_operand(out, value)?;
                 writeln!(out, "        (local.set ${})", sanitize(dest)).unwrap();
@@ -717,6 +726,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn emits_native_plan() {
+        let src = "fn main() -> Int { return 1 + 2; }";
+        let plan = emit_from_source(src, Backend::NativePlan).unwrap();
+        assert!(plan.contains("native lowering plan"));
+        assert!(plan.contains("fn main") || plan.contains("main"));
+        assert!(plan.contains("NATIVE") || plan.contains("MIR"));
+    }
+
+    #[test]
     fn emits_llvm_for_arithmetic() {
         let src = "fn main() -> Int { return 20 + 22; }";
         let ir = emit_from_source(src, Backend::LlvmIr).unwrap();
@@ -755,5 +773,36 @@ mod tests {
         let ir = emit_from_source(src, Backend::LlvmIr).unwrap();
         assert!(ir.contains("call i64 @add") || ir.contains("@add"));
         assert!(ir.contains("define i64 @add"));
+    }
+}
+
+
+/// Research notes for a future optional `cranelift` feature (0.5.x+).
+///
+/// Not linked: keep the default binary dependency-free.
+pub mod cranelift_research {
+    //! Planned mapping (when feature is enabled):
+    //!
+    //! - `MirInstr::Binary { Add, .. }` → `cranelift_codegen::ir::InstBuilder::iadd`
+    //! - `MirTerminator::Branch` → `brif` / `jump`
+    //! - Function ABI: system-v or win64 via cranelift-native
+    //!
+    //! Enable sketch:
+    //! ```toml
+    //! [features]
+    //! cranelift = ["dep:cranelift-codegen", "dep:cranelift-frontend", "dep:cranelift-native"]
+    //! ```
+
+    /// Returns a short status string for tooling / `snp emit-native`.
+    pub fn status() -> &'static str {
+        "cranelift: not linked (research only — see docs/NATIVE.md)"
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn status_mentions_research() {
+            assert!(super::status().contains("research") || super::status().contains("not linked"));
+        }
     }
 }

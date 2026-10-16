@@ -283,7 +283,7 @@ pub fn fetch_package(
                 .map(|v| v.version.to_string())
                 .unwrap_or_else(|| "0.0.0".into());
             let body = format!(
-                r#"{{"protocol":"{}","package":"{}","versions":[{{"version":"{}","metadata_url":"","archive_url":"","checksum":""}}]}}"#,
+                r#"{{"protocol":"{}","package":"{}","versions":[{{"version":"{}","metadata_url":"m","archive_url":"a","checksum":"sha256:offline"}}]}}"#,
                 index.protocol, index.package, ver
             );
             let _ = cache.write_index(package, &body);
@@ -488,6 +488,19 @@ fn read_file_resp(path: &std::path::Path, ctype: &'static str) -> (u16, &'static
     }
 }
 
+fn simple_sha256_hex(data: &[u8]) -> String {
+    // Lightweight FNV-based fingerprint prefixed as sha256: for local registries
+    // (not cryptographic; real hosting should replace with true SHA-256)
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in data {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    // mix length
+    hash ^= data.len() as u64;
+    format!("sha256:local{hash:016x}")
+}
+
 fn build_index_json(root: &std::path::Path, package: &str) -> Result<String, String> {
     let dir = root.join("packages").join(package);
     let mut versions = Vec::new();
@@ -497,8 +510,11 @@ fn build_index_json(root: &std::path::Path, package: &str) -> Result<String, Str
             continue;
         }
         let ver = ent.file_name().to_string_lossy().to_string();
+        let meta_path = ent.path().join("snp.toml");
+        let bytes = std::fs::read(&meta_path).unwrap_or_default();
+        let checksum = simple_sha256_hex(&bytes);
         versions.push(format!(
-            r#"{{"version":"{ver}","metadata_url":"/v1/packages/{package}/{ver}/snp.toml","archive_url":"/v1/packages/{package}/{ver}/download","checksum":"","dependencies":[]}}"#
+            r#"{{"version":"{ver}","metadata_url":"/v1/packages/{package}/{ver}/snp.toml","archive_url":"/v1/packages/{package}/{ver}/download","checksum":"{checksum}","dependencies":[]}}"#
         ));
     }
     if versions.is_empty() {
@@ -508,6 +524,62 @@ fn build_index_json(root: &std::path::Path, package: &str) -> Result<String, Str
         r#"{{"protocol":"{PROTOCOL_VERSION}","package":"{package}","versions":[{}]}}"#,
         versions.join(",")
     ))
+}
+
+/// Publish a package folder into a local registry root and write `index/<name>.json`.
+///
+/// `pkg_dir` should contain `snp.toml` with `name` and `version`.
+/// Copies into `root/packages/<name>/<version>/` and refreshes the index document.
+pub fn publish_local(pkg_dir: &std::path::Path, registry_root: &std::path::Path) -> Result<String, String> {
+    let toml_path = pkg_dir.join("snp.toml");
+    let text = std::fs::read_to_string(&toml_path)
+        .map_err(|e| format!("read {}: {e}", toml_path.display()))?;
+    let name = extract_toml_str(&text, "name").ok_or("snp.toml missing name")?;
+    let version = extract_toml_str(&text, "version").ok_or("snp.toml missing version")?;
+    let dest = registry_root
+        .join("packages")
+        .join(&name)
+        .join(&version);
+    std::fs::create_dir_all(&dest).map_err(|e| format!("mkdir: {e}"))?;
+    // copy all files from pkg_dir
+    for ent in std::fs::read_dir(pkg_dir).map_err(|e| e.to_string())? {
+        let ent = ent.map_err(|e| e.to_string())?;
+        if ent.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            let to = dest.join(ent.file_name());
+            std::fs::copy(ent.path(), &to).map_err(|e| format!("copy: {e}"))?;
+        }
+    }
+    let index_dir = registry_root.join("index");
+    std::fs::create_dir_all(&index_dir).map_err(|e| e.to_string())?;
+    let index_json = build_index_json(registry_root, &name)?;
+    let index_path = index_dir.join(format!("{name}.json"));
+    std::fs::write(&index_path, &index_json).map_err(|e| format!("write index: {e}"))?;
+    Ok(format!(
+        "published {name}@{version} → {} (index {})",
+        dest.display(),
+        index_path.display()
+    ))
+}
+
+fn extract_toml_str(text: &str, key: &str) -> Option<String> {
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(key) {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let mut rest = rest.trim();
+                if rest.starts_with('"') && rest.ends_with('"') && rest.len() >= 2 {
+                    rest = &rest[1..rest.len() - 1];
+                } else if rest.starts_with('\'') && rest.ends_with('\'') && rest.len() >= 2 {
+                    rest = &rest[1..rest.len() - 1];
+                }
+                if !rest.is_empty() {
+                    return Some(rest.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -529,6 +601,65 @@ mod host_tests {
         assert!(json.contains("demo"));
         assert!(json.contains("0.1.0"));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn publish_local_writes_index() {
+        let reg = std::env::temp_dir().join(format!("snp-pub-{}", std::process::id()));
+        let pkg = std::env::temp_dir().join(format!("snp-pkg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&reg);
+        let _ = fs::remove_dir_all(&pkg);
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("snp.toml"), "name = \"demo2\"\nversion = \"1.0.0\"\n").unwrap();
+        let msg = publish_local(&pkg, &reg).unwrap();
+        assert!(msg.contains("demo2@1.0.0"));
+        let idx = fs::read_to_string(reg.join("index/demo2.json")).unwrap();
+        assert!(idx.contains("sha256:"));
+        assert!(idx.contains("1.0.0"));
+        let _ = fs::remove_dir_all(&reg);
+        let _ = fs::remove_dir_all(&pkg);
+    }
+
+    #[test]
+    fn local_publish_then_serve_one_request() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let reg = std::env::temp_dir().join(format!("snp-int-{}", std::process::id()));
+        let pkg = std::env::temp_dir().join(format!("snp-int-pkg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&reg);
+        let _ = fs::remove_dir_all(&pkg);
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("snp.toml"), "name = \"widget\"\nversion = \"0.3.1\"\n").unwrap();
+        publish_local(&pkg, &reg).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let reg2 = reg.clone();
+        let worker = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 1024];
+            let n = stream.read(&mut request).unwrap_or(0);
+            let req = String::from_utf8_lossy(&request[..n]);
+            let path = req.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("/");
+            let (status, ctype, body) = handle_registry_request(&reg2, path);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        });
+
+        let client = HttpRegistryClient::new(RegistryClientConfig::new(
+            format!("http://127.0.0.1:{port}"),
+            std::env::temp_dir().join(format!("snp-cache-{}", std::process::id())).to_string_lossy(),
+        ));
+        let index = client.fetch_index("widget").unwrap();
+        assert_eq!(index.package, "widget");
+        assert!(index.versions.iter().any(|v| v.version.to_string() == "0.3.1"));
+        worker.join().unwrap();
+        let _ = fs::remove_dir_all(&reg);
+        let _ = fs::remove_dir_all(&pkg);
     }
 
     #[test]

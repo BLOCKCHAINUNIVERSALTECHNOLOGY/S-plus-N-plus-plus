@@ -1,0 +1,11 @@
+// S+N++ 2.2 — match-expression + list_sort_by
+fn main() -> Int {
+    let code = 2;
+    let msg = match code {
+        1 => 100,
+        2 => 200,
+        _ => 0,
+    };
+    let xs = list_sort_by([30, 10, 20], fn(x: Int) -> Int { return x; });
+    return msg + list_get(xs, 0);
+}

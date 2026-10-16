@@ -1,0 +1,9 @@
+// S+N++ 2.1 — if-expression, unique, chunk, lines
+fn main() -> Int {
+    let score = 85;
+    let grade = if score >= 90 { 1 } else { if score >= 80 { 2 } else { 3 } };
+    let xs = list_unique([1, 1, 2, 3, 2]);
+    let parts = list_chunk(xs, 2);
+    print(str_lines("hello\nworld"));
+    return grade + list_len(parts);
+}

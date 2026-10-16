@@ -1,0 +1,9 @@
+// S+N++ 1.3 — %, sort, join, sum
+fn main() -> Int {
+    let xs = list_sort([5, 1, 4, 2, 3]);
+    let total = list_sum(xs);
+    let label = str_join(["sum", "is"], " ");
+    print(label);
+    assert(total % 5 == 0, "15 % 5");
+    return total + (17 % 5);
+}

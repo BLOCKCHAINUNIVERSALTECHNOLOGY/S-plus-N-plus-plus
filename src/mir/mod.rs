@@ -79,6 +79,11 @@ pub enum MirInstr {
         op: Token,
         value: MirOperand,
     },
+    /// dest = value?  (Result unwrap / early return Err)
+    Try {
+        dest: String,
+        value: MirOperand,
+    },
     /// dest = call name(args)
     Call {
         dest: String,
@@ -328,9 +333,10 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
             var,
             start,
             end,
+            inclusive,
             body,
         } => {
-            // desugar: let var = start; while var < end { body; var = var + 1 }
+            // desugar: let var = start; while var < end (or <=) { body; var = var + 1 }
             let s = lower_expr(start, b);
             b.push(MirInstr::Assign {
                 dest: var.clone(),
@@ -350,9 +356,10 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
 
             b.switch(header);
             let cmp = b.fresh("cmp");
+            let cmp_op = if *inclusive { Token::Lte } else { Token::Lt };
             b.push(MirInstr::Binary {
                 dest: cmp.clone(),
-                op: Token::Lt,
+                op: cmp_op,
                 left: MirOperand::Local(var.clone()),
                 right: MirOperand::Local(end_tmp),
             });
@@ -390,8 +397,7 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
 
             b.switch(exit);
         }
-        HirStmt::ForIn { var, iter, body } => {
-            // Keep as while-style with index temps (VM still owns list iteration details)
+        HirStmt::ForIn { var, index, iter, body } => {
             let iter_tmp = b.fresh("iter");
             let it = lower_expr(iter, b);
             b.push(MirInstr::Assign {
@@ -430,6 +436,12 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
             });
 
             b.switch(body_bb);
+            if let Some(user_idx) = index {
+                b.push(MirInstr::Assign {
+                    dest: user_idx.clone(),
+                    value: MirOperand::Local(idx.clone()),
+                });
+            }
             b.push(MirInstr::Index {
                 dest: var.clone(),
                 base: MirOperand::Local(iter_tmp),
@@ -567,8 +579,11 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
                         });
                     }
                     crate::ast::Pattern::Or(_) => {
-                        // Expanded in HIR; if present, treat as always-fail
                         b.set_term(MirTerminator::Jump(next_bb));
+                    }
+                    crate::ast::Pattern::Tuple(_) => {
+                        // structural match deferred; accept and bind in arm
+                        b.set_term(MirTerminator::Jump(arm_bb));
                     }
                 }
                 b.switch(arm_bb);
@@ -582,6 +597,20 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
                                 MirOperand::ConstInt(i as i64),
                             ],
                         });
+                    }
+                }
+                if let crate::ast::Pattern::Tuple(ps) = pat {
+                    for (i, p) in ps.iter().enumerate() {
+                        if let crate::ast::Pattern::Var(name) = p {
+                            b.push(MirInstr::Call {
+                                dest: name.clone(),
+                                name: "tuple_get".into(),
+                                args: vec![
+                                    MirOperand::Local(scr_tmp.clone()),
+                                    MirOperand::ConstInt(i as i64),
+                                ],
+                            });
+                        }
                     }
                 }
                 if let crate::ast::Pattern::Struct { fields, .. } = pat {
@@ -649,7 +678,22 @@ fn hir_free_vars_expr(e: &HirExpr, bound: &std::collections::HashSet<String>, ou
             hir_free_vars_expr(a, bound, out);
             hir_free_vars_expr(b, bound, out);
         }
-        HirExpr::Unary(_, v) | HirExpr::Field { object: v, .. } => {
+        HirExpr::Tuple(items) => {
+            for it in items {
+                hir_free_vars_expr(it, bound, out);
+            }
+        }
+        HirExpr::Hole => {}
+        HirExpr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            hir_free_vars_expr(cond, bound, out);
+            hir_free_vars_expr(then_branch, bound, out);
+            hir_free_vars_expr(else_branch, bound, out);
+        }
+        HirExpr::Unary(_, v) | HirExpr::Try(v) | HirExpr::Field { object: v, .. } => {
             hir_free_vars_expr(v, bound, out);
         }
         HirExpr::Call { args, .. } => {
@@ -719,17 +763,20 @@ fn hir_free_vars_stmts(xs: &[HirStmt], bound: &std::collections::HashSet<String>
                 hir_free_vars_expr(cond, &bound, out);
                 hir_free_vars_stmts(body, &bound, out);
             }
-            HirStmt::ForRange { var, start, end, body } => {
+            HirStmt::ForRange { var, start, end, body, .. } => {
                 hir_free_vars_expr(start, &bound, out);
                 hir_free_vars_expr(end, &bound, out);
                 let mut b2 = bound.clone();
                 b2.insert(var.clone());
                 hir_free_vars_stmts(body, &b2, out);
             }
-            HirStmt::ForIn { var, iter, body } => {
+            HirStmt::ForIn { var, index, iter, body } => {
                 hir_free_vars_expr(iter, &bound, out);
                 let mut b2 = bound.clone();
                 b2.insert(var.clone());
+                if let Some(i) = index {
+                    b2.insert(i.clone());
+                }
                 hir_free_vars_stmts(body, &b2, out);
             }
             HirStmt::Match { scrutinee, arms } => {
@@ -780,6 +827,57 @@ fn lower_expr(e: &HirExpr, b: &mut Builder) -> MirOperand {
             }
         },
         HirExpr::Var(n) => MirOperand::Local(n.clone()),
+        HirExpr::Binary(a, op, right) if matches!(op, Token::AmpAmp | Token::PipePipe) => {
+            // Short-circuit: a && b / a || b
+            let left = lower_expr(a, b);
+            let dest = b.fresh("logic");
+            let then_bb = b.new_block();
+            let else_bb = b.new_block();
+            let join = b.new_block();
+            if matches!(op, Token::AmpAmp) {
+                // if left then right else false
+                b.set_term(MirTerminator::Branch {
+                    cond: left,
+                    then_bb,
+                    else_bb,
+                });
+                b.switch(then_bb);
+                let r = lower_expr(right, b);
+                b.push(MirInstr::Assign {
+                    dest: dest.clone(),
+                    value: r,
+                });
+                b.set_term(MirTerminator::Jump(join));
+                b.switch(else_bb);
+                b.push(MirInstr::Assign {
+                    dest: dest.clone(),
+                    value: MirOperand::ConstBool(false),
+                });
+                b.set_term(MirTerminator::Jump(join));
+            } else {
+                // if left then true else right
+                b.set_term(MirTerminator::Branch {
+                    cond: left,
+                    then_bb,
+                    else_bb,
+                });
+                b.switch(then_bb);
+                b.push(MirInstr::Assign {
+                    dest: dest.clone(),
+                    value: MirOperand::ConstBool(true),
+                });
+                b.set_term(MirTerminator::Jump(join));
+                b.switch(else_bb);
+                let r = lower_expr(right, b);
+                b.push(MirInstr::Assign {
+                    dest: dest.clone(),
+                    value: r,
+                });
+                b.set_term(MirTerminator::Jump(join));
+            }
+            b.switch(join);
+            MirOperand::Local(dest)
+        }
         HirExpr::Binary(a, op, right) => {
             let left = lower_expr(a, b);
             let right = lower_expr(right, b);
@@ -789,6 +887,76 @@ fn lower_expr(e: &HirExpr, b: &mut Builder) -> MirOperand {
                 op: op.clone(),
                 left,
                 right,
+            });
+            MirOperand::Local(dest)
+        }
+        HirExpr::Tuple(items) => {
+            let mut parts = Vec::new();
+            for it in items {
+                parts.push(lower_expr(it, b));
+            }
+            let dest = b.fresh("tup");
+            // encode as MakeStruct-like via Call __tuple_make
+            b.push(MirInstr::Call {
+                dest: dest.clone(),
+                name: "__tuple_make".into(),
+                args: parts,
+            });
+            MirOperand::Local(dest)
+        }
+        HirExpr::Hole => MirOperand::ConstUnit,
+        HirExpr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let c = lower_expr(cond, b);
+            let dest = b.fresh("ifx");
+            let then_bb = b.new_block();
+            let else_bb = b.new_block();
+            let join = b.new_block();
+            b.set_term(MirTerminator::Branch {
+                cond: c,
+                then_bb,
+                else_bb,
+            });
+            b.switch(then_bb);
+            let t = lower_expr(then_branch, b);
+            b.push(MirInstr::Assign {
+                dest: dest.clone(),
+                value: t,
+            });
+            b.set_term(MirTerminator::Jump(join));
+            b.switch(else_bb);
+            let e = lower_expr(else_branch, b);
+            b.push(MirInstr::Assign {
+                dest: dest.clone(),
+                value: e,
+            });
+            b.set_term(MirTerminator::Jump(join));
+            b.switch(join);
+            MirOperand::Local(dest)
+        }
+        HirExpr::Tuple(items) => {
+            let mut parts = Vec::new();
+            for it in items {
+                parts.push(lower_expr(it, b));
+            }
+            let dest = b.fresh("tup");
+            b.push(MirInstr::Call {
+                dest: dest.clone(),
+                name: "__tuple_make".into(),
+                args: parts,
+            });
+            MirOperand::Local(dest)
+        }
+        HirExpr::Hole => MirOperand::ConstUnit,
+        HirExpr::Try(v) => {
+            let src = lower_expr(v, b);
+            let dest = b.fresh("try");
+            b.push(MirInstr::Try {
+                dest: dest.clone(),
+                value: src,
             });
             MirOperand::Local(dest)
         }

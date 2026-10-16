@@ -1,0 +1,11 @@
+// S+N++ 0.8 — pipeline + list literals
+fn main() -> Int {
+    let xs = [1, 2, 3, 4, 5];
+    let total = xs
+        |> list_filter(fn(x: Int) -> Bool { return x > 2; })
+        |> list_map(fn(x: Int) -> Int { return x * 10; })
+        |> list_fold(0, fn(a: Int, b: Int) -> Int { return a + b; });
+    assert(total == 120, "expected 30+40+50");
+    print(total);
+    return total;
+}

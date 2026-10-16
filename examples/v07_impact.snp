@@ -1,0 +1,25 @@
+// S+N++ 0.7 impact pack
+fn id[T](x: T) -> T {
+    return x;
+}
+
+mod util {
+    pub fn double(n: Int) -> Int {
+        return n * 2;
+    }
+}
+
+use util.double;
+
+fn main() -> Int {
+    let n = id(21);
+    let m = double(n);
+    defer {
+        print(m);
+    }
+    let s = str_replace("go", "g", "G");
+    if str_starts_with(s, "G") {
+        return m + str_len(s);
+    }
+    return 0;
+}

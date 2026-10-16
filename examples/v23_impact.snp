@@ -1,0 +1,8 @@
+// S+N++ 2.3 — pipeline `_` + tuples
+fn main() -> Int {
+    let xs = [1, 2, 3, 4];
+    let total = xs |> list_sum();
+    let mid = 2 |> list_get(xs, _);
+    let t = (total, mid);
+    return tuple_get(t, 0) + tuple_get(t, 1);
+}

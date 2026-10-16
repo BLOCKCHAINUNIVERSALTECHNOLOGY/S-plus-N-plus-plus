@@ -53,10 +53,12 @@ pub enum HirStmt {
         var: String,
         start: HirExpr,
         end: HirExpr,
+        inclusive: bool,
         body: Vec<HirStmt>,
     },
     ForIn {
         var: String,
+        index: Option<String>,
         iter: HirExpr,
         body: Vec<HirStmt>,
     },
@@ -102,6 +104,15 @@ pub enum HirExpr {
         return_type: Type,
         body: Vec<HirStmt>,
     },
+    /// `expr?`
+    Try(Box<HirExpr>),
+    IfExpr {
+        cond: Box<HirExpr>,
+        then_branch: Box<HirExpr>,
+        else_branch: Box<HirExpr>,
+    },
+    Tuple(Vec<HirExpr>),
+    Hole, // should not remain after pipe desugar
 }
 
 #[derive(Debug, Clone)]
@@ -142,7 +153,7 @@ fn lower_stmts(xs: &[Stmt]) -> Vec<HirStmt> {
 
 fn lower_stmt(s: &Stmt) -> HirStmt {
     match s {
-        Stmt::Let(n, e) => HirStmt::Let {
+        Stmt::Let(n, e) | Stmt::Const(n, e) => HirStmt::Let {
             name: n.clone(),
             value: lower_expr(e),
         },
@@ -178,15 +189,41 @@ fn lower_stmt(s: &Stmt) -> HirStmt {
             var,
             start,
             end,
+            inclusive,
             body,
         } => HirStmt::ForRange {
             var: var.clone(),
             start: lower_expr(start),
             end: lower_expr(end),
+            inclusive: *inclusive,
             body: lower_stmts(body),
         },
-        Stmt::ForIn { var, iter, body } => HirStmt::ForIn {
+        Stmt::IfLet {
+            pattern,
+            value,
+            yes,
+            no,
+        } => {
+            // Desugar to match
+            HirStmt::Match {
+                scrutinee: lower_expr(value),
+                arms: vec![
+                    (
+                        pattern.clone(),
+                        None,
+                        lower_stmts(yes),
+                    ),
+                    (
+                        crate::ast::Pattern::Wildcard,
+                        None,
+                        lower_stmts(no),
+                    ),
+                ],
+            }
+        },
+        Stmt::ForIn { var, index, iter, body } => HirStmt::ForIn {
             var: var.clone(),
+            index: index.clone(),
             iter: lower_expr(iter),
             body: lower_stmts(body),
         },
@@ -213,6 +250,7 @@ fn lower_stmt(s: &Stmt) -> HirStmt {
         }
         Stmt::Break => HirStmt::Break,
         Stmt::Continue => HirStmt::Continue,
+        Stmt::Defer(_) => HirStmt::Expr(HirExpr::Literal(Value::Unit)), // desugared earlier
     }
 }
 
@@ -228,6 +266,21 @@ fn lower_expr(e: &Expr) -> HirExpr {
             Box::new(lower_expr(b)),
         ),
         Expr::Unary(op, e) => HirExpr::Unary(op.clone(), Box::new(lower_expr(e))),
+        Expr::Try(e) => HirExpr::Try(Box::new(lower_expr(e))),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => HirExpr::IfExpr {
+            cond: Box::new(lower_expr(cond)),
+            then_branch: Box::new(lower_expr(then_branch)),
+            else_branch: Box::new(lower_expr(else_branch)),
+        },
+        Expr::MatchExpr { .. } => {
+            HirExpr::Literal(Value::Unit)
+        },
+        Expr::Tuple(items) => HirExpr::Tuple(items.iter().map(lower_expr).collect()),
+        Expr::Hole => HirExpr::Literal(Value::Unit), // invalid if leftover
         Expr::Call(n, args) => HirExpr::Call {
             name: n.clone(),
             args: args.iter().map(lower_expr).collect(),

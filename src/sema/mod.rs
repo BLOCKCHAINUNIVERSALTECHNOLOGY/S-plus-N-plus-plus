@@ -16,9 +16,93 @@ fn with_enums<R>(f: impl FnOnce(&HashMap<String, EnumDef>) -> R) -> R {
     ENUMS.with(|e| f(&e.borrow()))
 }
 
+
+fn intrinsic_method_name(recv_ty: &Type, method: &str) -> Option<&'static str> {
+    match recv_ty {
+        Type::List | Type::ListOf(_) => match method {
+            "len" => Some("list_len"),
+            "get" => Some("list_get"),
+            "push" => Some("list_push"),
+            "set" => Some("list_set"),
+            "contains" => Some("list_contains"),
+            "rev" => Some("list_rev"),
+            "sort" => Some("list_sort"),
+            "sum" => Some("list_sum"),
+            "min" => Some("list_min"),
+            "max" => Some("list_max"),
+            "is_empty" => Some("list_is_empty"),
+            "map" => Some("list_map"),
+            "filter" => Some("list_filter"),
+            "fold" => Some("list_fold"),
+            "slice" => Some("list_slice"),
+            "unique" => Some("list_unique"),
+            "find" => Some("list_find"),
+            "flatten" => Some("list_flatten"),
+            "chunk" => Some("list_chunk"),
+            "take" => Some("list_take"),
+            "drop" => Some("list_drop"),
+            "any" => Some("list_any"),
+            "all" => Some("list_all"),
+            _ => None,
+        },
+        Type::Str => match method {
+            "len" => Some("str_len"),
+            "contains" => Some("str_contains"),
+            "split" => Some("str_split"),
+            "replace" => Some("str_replace"),
+            "starts_with" => Some("str_starts_with"),
+            "ends_with" => Some("str_ends_with"),
+            "is_empty" => Some("str_is_empty"),
+            "upper" => Some("str_upper"),
+            "lower" => Some("str_lower"),
+            "lines" => Some("str_lines"),
+            "index_of" => Some("str_index_of"),
+            "substring" => Some("str_substring"),
+            "repeat" => Some("str_repeat"),
+            "trim" => Some("str_trim"),
+            _ => None,
+        },
+        Type::Map | Type::MapOf(_, _) => match method {
+            "len" => Some("map_len"),
+            "get" => Some("map_get"),
+            "set" => Some("map_set"),
+            "has" => Some("map_has"),
+            "keys" => Some("map_keys"),
+            "values" => Some("map_values"),
+            "remove" => Some("map_remove"),
+            _ => None,
+        },
+        Type::Tuple(_) => match method {
+            "get" => Some("tuple_get"),
+            "len" => Some("tuple_len"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn pattern_binding_names(p: &Pattern) -> Vec<String> {
+    match p {
+        Pattern::Var(n) => vec![n.clone()],
+        Pattern::Variant { bindings, .. } => bindings.clone(),
+        Pattern::Struct { fields, .. } => fields.iter().map(|(_, b)| b.clone()).collect(),
+        Pattern::Or(ps) => ps.iter().flat_map(pattern_binding_names).collect(),
+        Pattern::Tuple(ps) => ps.iter().flat_map(pattern_binding_names).collect(),
+        _ => vec![],
+    }
+}
+
 fn type_name(t: &Type) -> String {
     t.name()
 }
+
+fn types_compatible(expected: &Type, got: &Type) -> bool {
+    if expected == got || *got == Type::Unknown || *expected == Type::Unknown {
+        return true;
+    }
+    matches!(expected, Type::Generic(_)) || matches!(got, Type::Generic(_))
+}
+
 
 fn expr_type(
     x: &Expr,
@@ -38,13 +122,14 @@ fn expr_type(
             let builtins = [
                 "print", "spawn", "join", "channel", "send", "receive",
                 "str_len", "str_contains", "str_upper", "str_lower", "str_trim", "str_concat",
-                "list", "list_push", "list_len", "list_get", "list_set", "list_concat",
-                "map", "map_set", "map_get", "map_has",
+                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
+                "map", "map_set", "map_get", "map_has", "map_len", "map_keys", "map_values", "map_remove",
                 "abs", "min", "max", "pow", "sqrt_approx",
                 "now_ms", "rand", "rand_range",
                 "fs_read_text", "fs_write_text", "fs_exists",
                 "json_stringify", "json_parse",
-                "assert_eq", "assert_true", "assert_false",
+                "assert", "assert_eq", "assert_true", "assert_false", "panic", "todo",
+                "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
             ];
             if builtins.contains(&n.as_str()) {
                 for arg in args {
@@ -55,12 +140,22 @@ fn expr_type(
                     "channel" => Type::Channel,
                     "receive" | "list_get" | "map_get" | "rand" | "rand_range" | "now_ms" => Type::Unknown,
                     "str_len" | "list_len" | "abs" | "min" | "max" | "pow" | "sqrt_approx" | "host_strlen" => Type::Int,
-                    "str_contains" | "map_has" | "fs_exists" => Type::Bool,
-                    "str_upper" | "str_lower" | "str_trim" | "str_concat" | "fs_read_text" | "json_stringify" => Type::Str,
-                    "list" | "list_push" | "list_set" | "list_concat" => Type::List,
-                    "map" | "map_set" => Type::Map,
+                    "str_contains" | "map_has" | "fs_exists" | "str_starts_with" | "str_ends_with" | "list_is_empty" | "str_is_empty" => Type::Bool,
+                    "map_len" | "list_find" => Type::Int,
+                    "str_upper" | "str_lower" | "str_trim" | "str_concat" | "str_replace" | "fs_read_text" | "json_stringify" => Type::Str,
+                    "list" | "list_push" | "list_set" | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_slice" | "list_rev" | "list_sort" | "list_sort_by" | "list_take" | "list_drop" | "range" | "str_split" => Type::List,
+                    "list_contains" => Type::Bool,
+                    "list_sum" | "list_min" | "list_max" | "str_index_of" | "tuple_len" => Type::Int,
+                    "tuple_get" => Type::Unknown,
+                    "str_join" | "str_substring" | "str_trim" | "str_lower" | "str_upper" => Type::Str,
+                    "list_any" | "list_all" => Type::Bool,
+                    "clone" => Type::Unknown,
+                    "list_fold" => Type::Unknown,
+                    "map" | "map_set" | "map_remove" | "map_merge" => Type::Map,
+                    "map_keys" | "map_values" | "list_flatten" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_lines" | "enumerate" => Type::List,
+                    "str_repeat" => Type::Str,
                     "json_parse" => Type::Unknown,
-                    "fs_write_text" | "assert_true" | "assert_false" | "assert_eq" => Type::Unit,
+                    "fs_write_text" | "assert" | "assert_true" | "assert_false" | "assert_eq" | "panic" | "todo" => Type::Unit,
                     _ => Type::Unit,
                 });
             }
@@ -97,16 +192,6 @@ fn expr_type(
                     };
                     return expr_type(&lit, env, sigs, structs);
                 }
-                if let Some(Type::Struct(type_name)) = env.get(base) {
-                    let mut method_args = vec![Expr::Var(base.to_string())];
-                    method_args.extend(args.iter().cloned());
-                    return expr_type(
-                        &Expr::Call(format!("{type_name}.{variant}"), method_args),
-                        env,
-                        sigs,
-                        structs,
-                    );
-                }
                 return Err(format!("unknown function `{n}`"));
             } else {
                 return Err(format!("unknown function `{n}`"));
@@ -118,11 +203,15 @@ fn expr_type(
                     args.len()
                 ));
             }
+            let mut subst: HashMap<String, Type> = HashMap::new();
             for (i, arg) in args.iter().enumerate() {
                 let got = expr_type(arg, env, sigs, structs)?;
                 let compatible = match &params[i] {
                     Type::Ref(inner) | Type::MutRef(inner) => got == **inner,
-                    Type::Generic(_) => true,
+                    Type::Generic(g) => {
+                        subst.insert(g.clone(), got.clone());
+                        true
+                    }
                     _ => got == params[i] || got == Type::Unknown || params[i] == Type::Unknown,
                 };
                 if !compatible {
@@ -134,7 +223,10 @@ fn expr_type(
                     ));
                 }
             }
-            Ok(ret.clone())
+            match ret {
+                Type::Generic(g) => Ok(subst.get(g).cloned().unwrap_or(Type::Unknown)),
+                other => Ok(other.clone()),
+            }
         }
         Expr::Unary(op, e) => {
             let t = expr_type(e, env, sigs, structs)?;
@@ -310,11 +402,25 @@ fn expr_type(
             args,
         } => {
             let recv_ty = expr_type(receiver, env, sigs, structs)?;
+            if let Some(builtin) = intrinsic_method_name(&recv_ty, method)
+                .or_else(|| {
+                    if matches!(recv_ty, Type::Unknown) {
+                        intrinsic_method_name(&Type::List, method)
+                            .or_else(|| intrinsic_method_name(&Type::Str, method))
+                    } else {
+                        None
+                    }
+                })
+            {
+                let mut full_args = vec![(*receiver.as_ref()).clone()];
+                full_args.extend(args.iter().cloned());
+                return expr_type(&Expr::Call(builtin.to_string(), full_args), env, sigs, structs);
+            }
             let type_name_s = match &recv_ty {
                 Type::Struct(n) => n.clone(),
                 other => {
                     return Err(format!(
-                        "method `{method}` requires struct receiver, got {}",
+                        "method `{method}` requires struct/list/string/map receiver, got {}",
                         type_name(other)
                     ));
                 }
@@ -323,6 +429,116 @@ fn expr_type(
             let mut full_args = vec![(*receiver.as_ref()).clone()];
             full_args.extend(args.iter().cloned());
             expr_type(&Expr::Call(full, full_args), env, sigs, structs)
+        }
+
+        Expr::Try(inner) => {
+            let t = expr_type(inner, env, sigs, structs)?;
+            match t {
+                Type::Enum(n) if n == "Result" => Ok(Type::Int),
+                Type::Unknown => Ok(Type::Unknown),
+                other => Err(format!("`?` expects Result, got {}", type_name(&other))),
+            }
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            expr_type(scrutinee, env, sigs, structs)?;
+            if arms.is_empty() {
+                return Err("match expression needs at least one arm".into());
+            }
+            let mut t: Option<Type> = None;
+            for a in arms {
+                let mut arm_env = env.clone();
+                for b in pattern_binding_names(&a.pattern) {
+                    arm_env.insert(b, Type::Unknown);
+                }
+                if let Some(g) = &a.guard {
+                    let gt = expr_type(g, &arm_env, sigs, structs)?;
+                    if gt != Type::Bool && gt != Type::Unknown {
+                        return Err("match guard must be Bool".into());
+                    }
+                }
+                let at = expr_type(&a.value, &arm_env, sigs, structs)?;
+                match &t {
+                    None => t = Some(at),
+                    Some(prev) if *prev == at || *prev == Type::Unknown || at == Type::Unknown => {
+                        if *prev == Type::Unknown {
+                            t = Some(at);
+                        }
+                    }
+                    Some(prev) => {
+                        return Err(format!(
+                            "match arms type mismatch: {} vs {}",
+                            type_name(prev),
+                            type_name(&at)
+                        ));
+                    }
+                }
+            }
+            Ok(t.unwrap_or(Type::Unknown))
+        }
+        Expr::Hole => Ok(Type::Unknown),
+        Expr::Tuple(items) => {
+            let mut ts = Vec::new();
+            for it in items {
+                ts.push(expr_type(it, env, sigs, structs)?);
+            }
+            Ok(Type::Tuple(ts))
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let ct = expr_type(cond, env, sigs, structs)?;
+            if ct != Type::Bool && ct != Type::Unknown {
+                return Err(format!("if condition must be Bool, got {}", type_name(&ct)));
+            }
+            let t1 = expr_type(then_branch, env, sigs, structs)?;
+            let t2 = expr_type(else_branch, env, sigs, structs)?;
+            if t1 == t2 || t1 == Type::Unknown || t2 == Type::Unknown {
+                Ok(if t1 != Type::Unknown { t1 } else { t2 })
+            } else {
+                Err(format!(
+                    "if branches type mismatch: {} vs {}",
+                    type_name(&t1),
+                    type_name(&t2)
+                ))
+            }
+        }
+        Expr::VariantLit {
+            enum_name,
+            variant,
+            args,
+        } => {
+            with_enums(|enums| {
+                let def = enums.get(enum_name).ok_or_else(|| {
+                    format!("unknown enum `{enum_name}`")
+                })?;
+                let payload = def
+                    .variants
+                    .iter()
+                    .find(|(n, _)| n == variant)
+                    .ok_or_else(|| {
+                        format!("enum `{enum_name}` has no variant `{variant}`")
+                    })?;
+                if args.len() != payload.1.len() {
+                    return Err(format!(
+                        "variant `{enum_name}.{variant}` expects {} field(s), got {}",
+                        payload.1.len(),
+                        args.len()
+                    ));
+                }
+                for (a, t) in args.iter().zip(payload.1.iter()) {
+                    let got = expr_type(a, env, sigs, structs)?;
+                    if got != *t && got != Type::Unknown && *t != Type::Unknown {
+                        return Err(format!(
+                            "variant field type mismatch: expected {}, got {}",
+                            type_name(t),
+                            type_name(&got)
+                        ));
+                    }
+                }
+                Ok(Type::Enum(enum_name.clone()))
+            })
         }
 
         Expr::Binary(a, op, b) => {
@@ -342,7 +558,7 @@ fn expr_type(
                         ))
                     }
                 }
-                Token::Minus | Token::Star | Token::Slash => {
+                Token::Minus | Token::Star | Token::Slash | Token::Percent => {
                     if (left == Type::Int || left == Type::Unknown)
                         && (right == Type::Int || right == Type::Unknown)
                     {
@@ -350,6 +566,19 @@ fn expr_type(
                     } else {
                         Err(format!(
                             "arithmetic expects Int, got {} and {}",
+                            type_name(&left),
+                            type_name(&right)
+                        ))
+                    }
+                }
+                Token::AmpAmp | Token::PipePipe => {
+                    if (left == Type::Bool || left == Type::Unknown)
+                        && (right == Type::Bool || right == Type::Unknown)
+                    {
+                        Ok(Type::Bool)
+                    } else {
+                        Err(format!(
+                            "logical operator expects Bool, got {} and {}",
                             type_name(&left),
                             type_name(&right)
                         ))
@@ -384,6 +613,11 @@ fn check_typed_stmts(
 ) -> Result<(), String> {
     for statement in xs {
         match statement {
+            Stmt::Const(name, expr) => {
+                // const: type-check expr, bind immutably (same as let for now)
+                let ty = expr_type(expr, env, sigs, structs)?;
+                env.insert(name.clone(), ty);
+            }
             Stmt::Let(name, expr) => {
                 let ty = expr_type(expr, env, sigs, structs)?;
                 env.insert(name.clone(), ty);
@@ -443,7 +677,7 @@ fn check_typed_stmts(
                 }
                 check_typed_stmts(body, &mut env.clone(), sigs, ret, structs)?;
             }
-            Stmt::For { var, start, end, body } => {
+            Stmt::For { var, start, end, inclusive, body } => {
                 if expr_type(start, env, sigs, structs)? != Type::Int
                     && expr_type(start, env, sigs, structs)? != Type::Unknown
                 {
@@ -454,7 +688,7 @@ fn check_typed_stmts(
                 loop_env.insert(var.clone(), Type::Int);
                 check_typed_stmts(body, &mut loop_env, sigs, ret, structs)?;
             }
-            Stmt::ForIn { var, iter, body } => {
+            Stmt::ForIn { var, index, iter, body } => {
                 let it = expr_type(iter, env, sigs, structs)?;
                 if !matches!(it, Type::List | Type::ListOf(_) | Type::Unknown) {
                     return Err(format!(
@@ -464,6 +698,9 @@ fn check_typed_stmts(
                 }
                 let mut loop_env = env.clone();
                 loop_env.insert(var.clone(), Type::Unknown);
+                if let Some(i) = index {
+                    loop_env.insert(i.clone(), Type::Int);
+                }
                 check_typed_stmts(body, &mut loop_env, sigs, ret, structs)?;
             }
             Stmt::Match { scrutinee, arms } => {
@@ -477,6 +714,13 @@ fn check_typed_stmts(
                         Pattern::Variant { bindings, .. } => {
                             for b in bindings {
                                 arm_env.insert(b.clone(), Type::Unknown);
+                            }
+                        }
+                        Pattern::Tuple(ps) => {
+                            for p in ps {
+                                for b in pattern_binding_names(p) {
+                                    arm_env.insert(b, Type::Unknown);
+                                }
                             }
                         }
                         Pattern::Struct { name, fields } => {
@@ -526,6 +770,10 @@ fn check_typed_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Defer(body) => {
+                let _ = body;
+            }
+            Stmt::IfLet { .. } => {}
         }
     }
     Ok(())
@@ -569,7 +817,27 @@ fn ownership_expr(
             ownership_expr(a, env, moved, false, sigs)?;
             ownership_expr(b, env, moved, false, sigs)?;
         }
-        Expr::Unary(_, e) => ownership_expr(e, env, moved, false, sigs)?,
+        Expr::Unary(_, e) | Expr::Try(e) => ownership_expr(e, env, moved, false, sigs)?,
+        Expr::IfExpr { cond, then_branch, else_branch } => {
+            ownership_expr(cond, env, moved, false, sigs)?;
+            ownership_expr(then_branch, env, moved, false, sigs)?;
+            ownership_expr(else_branch, env, moved, false, sigs)?;
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                ownership_expr(it, env, moved, false, sigs)?;
+            }
+        }
+        Expr::Hole => {}
+        Expr::MatchExpr { scrutinee, arms } => {
+            ownership_expr(scrutinee, env, moved, false, sigs)?;
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    ownership_expr(g, env, moved, false, sigs)?;
+                }
+                ownership_expr(&a.value, env, moved, false, sigs)?;
+            }
+        }
         Expr::Field(e, field) => {
             // Accessing a field of a moved struct is still a use of moved value
             if let Expr::Var(name) = e.as_ref() {
@@ -600,10 +868,10 @@ fn ownership_expr(
                         | "str_concat"
                         | "list"
                         | "list_push"
-                        | "list_len"
+                        | "list_len" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_rev" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "list_get"
                         | "list_set"
-                        | "list_concat"
+                        | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_rev" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "map"
                         | "map_set"
                         | "map_get"
@@ -679,6 +947,12 @@ fn ownership_stmts(
 ) -> Result<(), String> {
     for s in xs {
         match s {
+            Stmt::Const(name, expr) => {
+                ownership_expr(expr, env, moved, false, sigs)?;
+                let ty = expr_type(expr, env, sigs, &HashMap::new()).unwrap_or(Type::Unknown);
+                env.insert(name.clone(), ty);
+                moved.insert(name.clone(), false);
+            }
             Stmt::Let(name, expr) => {
                 ownership_expr(expr, env, moved, moved_var(expr).is_some(), sigs)?;
                 // Prefer a real type so Int/Bool stay copyable under moves
@@ -728,10 +1002,14 @@ fn ownership_stmts(
                 let mut loop_state = moved.clone();
                 ownership_stmts(body, env, &mut loop_state, sigs)?;
             }
-            Stmt::ForIn { body, iter, var } => {
+            Stmt::ForIn { body, iter, var, index } => {
                 ownership_expr(iter, env, moved, false, sigs)?;
                 env.insert(var.clone(), Type::Unknown);
                 moved.insert(var.clone(), false);
+                if let Some(i) = index {
+                    env.insert(i.clone(), Type::Int);
+                    moved.insert(i.clone(), false);
+                }
                 let mut loop_state = moved.clone();
                 ownership_stmts(body, env, &mut loop_state, sigs)?;
             }
@@ -760,6 +1038,16 @@ fn ownership_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Defer(body) => {
+                let _ = body;
+            }
+            Stmt::IfLet { .. } => {}
+            Stmt::Defer(body) => ownership_stmts(body, env, moved, sigs)?,
+            Stmt::IfLet { value, yes, no, .. } => {
+                ownership_expr(value, env, moved, false, sigs)?;
+                ownership_stmts(yes, env, moved, sigs)?;
+                ownership_stmts(no, env, moved, sigs)?;
+            }
         }
     }
     Ok(())
@@ -783,7 +1071,27 @@ fn definite_expr(
             definite_expr(a, types, assigned)?;
             definite_expr(b, types, assigned)?;
         }
-        Expr::Unary(_, e) | Expr::Field(e, _) => definite_expr(e, types, assigned)?,
+        Expr::Unary(_, e) | Expr::Try(e) | Expr::Field(e, _) => definite_expr(e, types, assigned)?,
+        Expr::IfExpr { cond, then_branch, else_branch } => {
+            definite_expr(cond, types, assigned)?;
+            definite_expr(then_branch, types, assigned)?;
+            definite_expr(else_branch, types, assigned)?;
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                definite_expr(it, types, assigned)?;
+            }
+        }
+        Expr::Hole => {}
+        Expr::MatchExpr { scrutinee, arms } => {
+            definite_expr(scrutinee, types, assigned)?;
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    definite_expr(g, types, assigned)?;
+                }
+                definite_expr(&a.value, types, assigned)?;
+            }
+        }
         Expr::Call(_, args) => {
             for arg in args {
                 definite_expr(arg, types, assigned)?;
@@ -842,6 +1150,11 @@ fn definite_stmts(
                 types.insert(name.clone(), ty.clone());
                 assigned.remove(name);
             }
+            Stmt::Const(name, expr) => {
+                definite_expr(expr, types, assigned)?;
+                types.insert(name.clone(), Type::Unknown);
+                assigned.insert(name.clone(), ());
+            }
             Stmt::Let(name, expr) => {
                 definite_expr(expr, types, assigned)?;
                 types.insert(name.clone(), Type::Unknown);
@@ -872,7 +1185,7 @@ fn definite_stmts(
                 let mut body_state = assigned.clone();
                 definite_stmts(body, types, &mut body_state)?;
             }
-            Stmt::For { var, start, end, body } => {
+            Stmt::For { var, start, end, inclusive, body } => {
                 definite_expr(start, types, assigned)?;
                 definite_expr(end, types, assigned)?;
                 types.insert(var.clone(), Type::Int);
@@ -880,10 +1193,14 @@ fn definite_stmts(
                 let mut body_state = assigned.clone();
                 definite_stmts(body, types, &mut body_state)?;
             }
-            Stmt::ForIn { var, iter, body } => {
+            Stmt::ForIn { var, index, iter, body } => {
                 definite_expr(iter, types, assigned)?;
                 types.insert(var.clone(), Type::Unknown);
                 assigned.insert(var.clone(), ());
+                if let Some(i) = index {
+                    types.insert(i.clone(), Type::Int);
+                    assigned.insert(i.clone(), ());
+                }
                 let mut body_state = assigned.clone();
                 definite_stmts(body, types, &mut body_state)?;
             }
@@ -919,6 +1236,10 @@ fn definite_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Defer(body) => {
+                let _ = body;
+            }
+            Stmt::IfLet { .. } => {}
         }
     }
     Ok(())
@@ -932,12 +1253,103 @@ pub fn check(fs: &[Function]) -> Result<(), String> {
         traits: vec![],
         functions: fs.to_vec(),
         externs: vec![],
-    })
+            consts: vec![],
+            uses: vec![],
+        })
 }
 
 
 /// Rewrite `MethodCall` nodes into `Call("Type.method", [recv, ...args])`.
+pub fn desugar_match_expressions(program: &mut Program) {
+    let mut empty_env = HashMap::new();
+    let empty_sigs = HashMap::new();
+    let empty_structs = HashMap::new();
+    for f in &mut program.functions {
+        let _ = desugar_stmts(&mut f.body, &mut empty_env, &empty_sigs, &empty_structs);
+    }
+}
+
+pub fn desugar_if_let(program: &mut Program) {
+
+    for f in &mut program.functions {
+        f.body = desugar_if_let_stmts(&f.body);
+    }
+}
+
+fn desugar_if_let_stmts(stmts: &[Stmt]) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    for s in stmts {
+        match s {
+            Stmt::IfLet {
+                pattern,
+                value,
+                yes,
+                no,
+            } => {
+                out.push(Stmt::Match {
+                    scrutinee: value.clone(),
+                    arms: vec![
+                        crate::ast::MatchArm {
+                            pattern: pattern.clone(),
+                            guard: None,
+                            body: desugar_if_let_stmts(yes),
+                        },
+                        crate::ast::MatchArm {
+                            pattern: crate::ast::Pattern::Wildcard,
+                            guard: None,
+                            body: desugar_if_let_stmts(no),
+                        },
+                    ],
+                });
+            }
+            Stmt::If(c, a, b) => out.push(Stmt::If(
+                c.clone(),
+                desugar_if_let_stmts(a),
+                desugar_if_let_stmts(b),
+            )),
+            Stmt::While(c, body) => out.push(Stmt::While(c.clone(), desugar_if_let_stmts(body))),
+            Stmt::For {
+                var,
+                start,
+                end,
+                inclusive,
+                body,
+            } => out.push(Stmt::For {
+                var: var.clone(),
+                start: start.clone(),
+                end: end.clone(),
+                inclusive: *inclusive,
+                body: desugar_if_let_stmts(body),
+            }),
+            Stmt::ForIn { var, index, iter, body } => out.push(Stmt::ForIn {
+                var: var.clone(),
+                index: index.clone(),
+                iter: iter.clone(),
+                body: desugar_if_let_stmts(body),
+            }),
+            Stmt::Match { scrutinee, arms } => {
+                let arms = arms
+                    .iter()
+                    .map(|a| crate::ast::MatchArm {
+                        pattern: a.pattern.clone(),
+                        guard: a.guard.clone(),
+                        body: desugar_if_let_stmts(&a.body),
+                    })
+                    .collect();
+                out.push(Stmt::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms,
+                });
+            }
+            Stmt::Defer(body) => out.push(Stmt::Defer(desugar_if_let_stmts(body))),
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
 pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
+
     let mut structs = HashMap::new();
     for s in &program.structs {
         structs.insert(s.name.clone(), s.clone());
@@ -958,6 +1370,18 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
             ],
         };
         enums.insert("Result".into(), result_enum);
+    }
+    if !enums.contains_key("Option") {
+        let opt = crate::ast::EnumDef {
+            name: "Option".into(),
+            visibility: crate::ast::Visibility::Public,
+            module_path: vec![],
+            variants: vec![
+                ("None".into(), vec![]),
+                ("Some".into(), vec![Type::Int]),
+            ],
+        };
+        enums.insert("Option".into(), opt);
     }
     ENUMS.with(|cell| {
         *cell.borrow_mut() = enums.clone();
@@ -1001,6 +1425,10 @@ fn desugar_stmts(
 ) -> Result<(), String> {
     for s in xs.iter_mut() {
         match s {
+            Stmt::Const(n, e) => {
+                *e = desugar_expr(e, env, sigs, structs)?;
+                env.insert(n.clone(), Type::Unknown);
+            }
             Stmt::Let(n, e) => {
                 *e = desugar_expr(e, env, sigs, structs)?;
                 let ty = expr_type(e, env, sigs, structs)?;
@@ -1064,6 +1492,10 @@ fn desugar_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Defer(body) => {
+                let _ = body;
+            }
+            Stmt::IfLet { .. } => {}
         }
     }
     Ok(())
@@ -1087,16 +1519,34 @@ fn desugar_expr(
                 new_args.push(desugar_expr(a, env, sigs, structs)?);
             }
             let recv_ty = expr_type(&recv, env, sigs, structs)?;
-            let type_name = match &recv_ty {
+            if let Some(builtin) = intrinsic_method_name(&recv_ty, method) {
+                let mut call_args = vec![recv];
+                call_args.extend(new_args);
+                return Ok(Expr::Call(builtin.to_string(), call_args));
+            }
+            let type_name_s = match &recv_ty {
                 Type::Struct(n) => n.clone(),
+                Type::Unknown => {
+                    // soft: try list_* / str_* naming when type unknown
+                    if let Some(builtin) = intrinsic_method_name(&Type::List, method)
+                        .or_else(|| intrinsic_method_name(&Type::Str, method))
+                    {
+                        let mut call_args = vec![recv];
+                        call_args.extend(new_args);
+                        return Ok(Expr::Call(builtin.to_string(), call_args));
+                    }
+                    return Err(format!(
+                        "method `{method}` on unknown type — annotate the receiver or use a function call"
+                    ));
+                }
                 other => {
                     return Err(format!(
-                        "method `{method}` requires struct receiver, got {}",
+                        "method `{method}` requires struct/list/string/map receiver, got {}",
                         type_name(other)
                     ));
                 }
             };
-            let full = format!("{type_name}.{method}");
+            let full = format!("{type_name_s}.{method}");
             let mut call_args = vec![recv];
             call_args.extend(new_args);
             Ok(Expr::Call(full, call_args))
@@ -1110,6 +1560,39 @@ fn desugar_expr(
             op.clone(),
             Box::new(desugar_expr(a, env, sigs, structs)?),
         )),
+        Expr::Try(inner) => Ok(Expr::Try(Box::new(desugar_expr(inner, env, sigs, structs)?))),
+        Expr::IfExpr { cond, then_branch, else_branch } => Ok(Expr::IfExpr {
+            cond: Box::new(desugar_expr(cond, env, sigs, structs)?),
+            then_branch: Box::new(desugar_expr(then_branch, env, sigs, structs)?),
+            else_branch: Box::new(desugar_expr(else_branch, env, sigs, structs)?),
+        }),
+        Expr::MatchExpr { scrutinee, arms } => {
+            // Desugar to (fn() { match ... { p => { return v; } } })()
+            let mut stmt_arms = Vec::new();
+            for a in arms {
+                let val = desugar_expr(&a.value, env, sigs, structs)?;
+                let guard = match &a.guard {
+                    Some(g) => Some(desugar_expr(g, env, sigs, structs)?),
+                    None => None,
+                };
+                stmt_arms.push(crate::ast::MatchArm {
+                    pattern: a.pattern.clone(),
+                    guard,
+                    body: vec![Stmt::Return(val)],
+                });
+            }
+            let scr = desugar_expr(scrutinee, env, sigs, structs)?;
+            let lambda = Expr::Lambda {
+                params: vec![],
+                param_types: vec![],
+                return_type: Type::Unknown,
+                body: vec![Stmt::Match {
+                    scrutinee: scr,
+                    arms: stmt_arms,
+                }],
+            };
+            Ok(Expr::CallExpr(Box::new(lambda), vec![]))
+        }
         Expr::Call(n, args) => {
             let mut na = Vec::new();
             for a in args {
@@ -1123,19 +1606,6 @@ fn desugar_expr(
                         variant: variant.to_string(),
                         args: na,
                     });
-                }
-                // The parser intentionally keeps `value.method(...)` as a
-                // dotted call until semantic analysis can distinguish it
-                // from `module.function(...)`. A local struct variable is a
-                // method receiver; rewrite it to the canonical Type.method
-                // function name and prepend the receiver argument.
-                if let Some(Type::Struct(type_name)) = env.get(base) {
-                    let mut method_args = vec![Expr::Var(base.to_string())];
-                    method_args.extend(na);
-                    return Ok(Expr::Call(
-                        format!("{type_name}.{variant}"),
-                        method_args,
-                    ));
                 }
             }
             Ok(Expr::Call(n.clone(), na))
@@ -1362,6 +1832,309 @@ fn check_trait_impls(program: &Program) -> Result<(), String> {
     Ok(())
 }
 
+
+fn pattern_covers_wildcard(p: &crate::ast::Pattern) -> bool {
+    match p {
+        crate::ast::Pattern::Wildcard | crate::ast::Pattern::Var(_) => true,
+        crate::ast::Pattern::Or(ps) => ps.iter().any(pattern_covers_wildcard),
+        _ => false,
+    }
+}
+
+fn pattern_variant_names(p: &crate::ast::Pattern) -> Vec<String> {
+    match p {
+        crate::ast::Pattern::Variant { variant, .. } => vec![variant.clone()],
+        crate::ast::Pattern::Or(ps) => ps.iter().flat_map(pattern_variant_names).collect(),
+        _ => vec![],
+    }
+}
+
+fn check_match_exhaustiveness(program: &Program) -> Result<(), String> {
+    let enums: HashMap<String, crate::ast::EnumDef> = program.enums.iter().map(|e| (e.name.clone(), e.clone())).collect();
+    // include prelude Result
+    fn walk_stmts(stmts: &[Stmt], enums: &HashMap<String, crate::ast::EnumDef>) -> Result<(), String> {
+        for s in stmts {
+            match s {
+                Stmt::Match { scrutinee, arms } => {
+                    // If any arm is wildcard/var, ok
+                    if arms.iter().any(|a| pattern_covers_wildcard(&a.pattern)) {
+                        continue;
+                    }
+                    // Try to resolve scrutinee type name from Variant patterns
+                    let mut covered: HashSet<String> = HashSet::new();
+                    let mut enum_hint: Option<String> = None;
+                    for a in arms {
+                        for v in pattern_variant_names(&a.pattern) {
+                            covered.insert(v);
+                        }
+                        if let crate::ast::Pattern::Variant { enum_name: Some(en), .. } = &a.pattern {
+                            enum_hint = Some(en.clone());
+                        }
+                    }
+                    if let Some(en) = enum_hint {
+                        if let Some(def) = enums.get(&en) {
+                            let missing: Vec<_> = def
+                                .variants
+                                .iter()
+                                .map(|(n, _)| n.clone())
+                                .filter(|n| !covered.contains(n))
+                                .collect();
+                            if !missing.is_empty() {
+                                return Err(format!(
+                                    "non-exhaustive match on `{en}`: missing variant(s) {}",
+                                    missing.join(", ")
+                                ));
+                            }
+                        }
+                    }
+                }
+                Stmt::If(_, yes, no) => {
+                    walk_stmts(yes, enums)?;
+                    walk_stmts(no, enums)?;
+                }
+                Stmt::While(_, body) => walk_stmts(body, enums)?,
+                Stmt::For { body, .. } | Stmt::ForIn { body, .. } => {
+                    walk_stmts(body, enums)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for f in &program.functions {
+        walk_stmts(&f.body, &enums)?;
+    }
+    Ok(())
+}
+
+
+
+/// Expand `use a.b` / `use a.{b,c}` into call-name aliases on the program.
+pub fn expand_uses(program: &mut Program) {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    for u in &program.uses {
+        if u.names.is_empty() {
+            if let Some(short) = u.path.last() {
+                aliases.insert(short.clone(), u.path.join("."));
+            }
+        } else {
+            let base = u.path.join(".");
+            for n in &u.names {
+                aliases.insert(n.clone(), format!("{base}.{n}"));
+            }
+        }
+    }
+    if aliases.is_empty() {
+        return;
+    }
+    for f in &mut program.functions {
+        rewrite_calls_stmts(&mut f.body, &aliases);
+    }
+}
+
+fn rewrite_calls_stmts(stmts: &mut [Stmt], aliases: &HashMap<String, String>) {
+    for s in stmts.iter_mut() {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_calls_expr(e, aliases);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_calls_expr(object, aliases);
+                rewrite_calls_expr(value, aliases);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_calls_expr(c, aliases);
+                rewrite_calls_stmts(a, aliases);
+                rewrite_calls_stmts(b, aliases);
+            }
+            Stmt::While(c, body) => {
+                rewrite_calls_expr(c, aliases);
+                rewrite_calls_stmts(body, aliases);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_calls_expr(start, aliases);
+                rewrite_calls_expr(end, aliases);
+                rewrite_calls_stmts(body, aliases);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_calls_expr(iter, aliases);
+                rewrite_calls_stmts(body, aliases);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_calls_expr(scrutinee, aliases);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_calls_expr(g, aliases);
+                    }
+                    rewrite_calls_stmts(&mut arm.body, aliases);
+                }
+            }
+            Stmt::Defer(body) => rewrite_calls_stmts(body, aliases),
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_calls_expr(value, aliases);
+                rewrite_calls_stmts(yes, aliases);
+                rewrite_calls_stmts(no, aliases);
+            }
+            Stmt::Break | Stmt::Continue | Stmt::Decl(_, _) => {}
+        }
+    }
+}
+
+fn rewrite_calls_expr(e: &mut Expr, aliases: &HashMap<String, String>) {
+    match e {
+        Expr::Call(name, args) => {
+            if let Some(full) = aliases.get(name) {
+                *name = full.clone();
+            }
+            for a in args {
+                rewrite_calls_expr(a, aliases);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_calls_expr(a, aliases);
+            rewrite_calls_expr(b, aliases);
+        }
+        Expr::Unary(_, x) | Expr::Try(x) | Expr::Field(x, _) => rewrite_calls_expr(x, aliases),
+        Expr::IfExpr { cond, then_branch, else_branch } => {
+            rewrite_calls_expr(cond, aliases);
+            rewrite_calls_expr(then_branch, aliases);
+            rewrite_calls_expr(else_branch, aliases);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_calls_expr(scrutinee, aliases);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_calls_expr(g, aliases);
+                }
+                rewrite_calls_expr(&mut a.value, aliases);
+            }
+        }
+        Expr::Hole => {}
+        Expr::Tuple(items) => {
+            for it in items {
+                rewrite_calls_expr(it, aliases);
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            rewrite_calls_expr(c, aliases);
+            for a in args {
+                rewrite_calls_expr(a, aliases);
+            }
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    rewrite_calls_expr(x, aliases);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_calls_stmts(body, aliases),
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_calls_expr(receiver, aliases);
+            for a in args {
+                rewrite_calls_expr(a, aliases);
+            }
+        }
+        Expr::VariantLit { args, .. } => {
+            for a in args {
+                rewrite_calls_expr(a, aliases);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, x) in fields {
+                rewrite_calls_expr(x, aliases);
+            }
+        }
+        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => {}
+    }
+}
+
+
+/// Expand `defer { ... }` — run deferred blocks LIFO before each return and at end of body.
+pub fn desugar_defer(program: &mut Program) {
+    for f in &mut program.functions {
+        f.body = desugar_defer_stmts(&f.body);
+    }
+}
+
+fn desugar_defer_stmts(stmts: &[Stmt]) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    let mut defers: Vec<Vec<Stmt>> = Vec::new();
+    for s in stmts {
+        match s {
+            Stmt::Defer(body) => {
+                defers.push(desugar_defer_stmts(body));
+            }
+            Stmt::Return(e) => {
+                for d in defers.iter().rev() {
+                    out.extend(d.clone());
+                }
+                out.push(Stmt::Return(e.clone()));
+            }
+            Stmt::If(c, a, b) => {
+                out.push(Stmt::If(
+                    c.clone(),
+                    desugar_defer_stmts(a),
+                    desugar_defer_stmts(b),
+                ));
+            }
+            Stmt::While(c, body) => {
+                out.push(Stmt::While(c.clone(), desugar_defer_stmts(body)));
+            }
+            Stmt::For { var, start, end, inclusive, body } => {
+                out.push(Stmt::For {
+                    var: var.clone(),
+                    start: start.clone(),
+                    end: end.clone(),
+                    inclusive: *inclusive,
+                    body: desugar_defer_stmts(body),
+                });
+            }
+            Stmt::ForIn { var, index, iter, body } => {
+                out.push(Stmt::ForIn {
+                    var: var.clone(),
+                    index: index.clone(),
+                    iter: iter.clone(),
+                    body: desugar_defer_stmts(body),
+                });
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let arms = arms
+                    .iter()
+                    .map(|a| crate::ast::MatchArm {
+                        pattern: a.pattern.clone(),
+                        guard: a.guard.clone(),
+                        body: desugar_defer_stmts(&a.body),
+                    })
+                    .collect();
+                out.push(Stmt::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms,
+                });
+            }
+            Stmt::IfLet {
+                pattern,
+                value,
+                yes,
+                no,
+            } => {
+                out.push(Stmt::IfLet {
+                    pattern: pattern.clone(),
+                    value: value.clone(),
+                    yes: desugar_defer_stmts(yes),
+                    no: desugar_defer_stmts(no),
+                });
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    for d in defers.iter().rev() {
+        out.extend(d.clone());
+    }
+    out
+}
+
+
 pub fn check_program(program: &Program) -> Result<(), String> {
     let mut structs = HashMap::new();
     for s in &program.structs {
@@ -1383,6 +2156,18 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             ],
         };
         enums.insert("Result".into(), result_enum);
+    }
+    if !enums.contains_key("Option") {
+        let opt = crate::ast::EnumDef {
+            name: "Option".into(),
+            visibility: crate::ast::Visibility::Public,
+            module_path: vec![],
+            variants: vec![
+                ("None".into(), vec![]),
+                ("Some".into(), vec![Type::Int]),
+            ],
+        };
+        enums.insert("Option".into(), opt);
     }
     ENUMS.with(|cell| {
         *cell.borrow_mut() = enums.clone();
@@ -1419,6 +2204,7 @@ pub fn check_program(program: &Program) -> Result<(), String> {
     }
     check_trait_impls(program)?;
     check_trait_bounds(program)?;
+    check_match_exhaustiveness(program)?;
 
     for f in &program.functions {
         CURRENT_MODULE.with(|cell| {

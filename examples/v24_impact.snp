@@ -1,0 +1,9 @@
+# S+N++ 2.4 — indexed for + enumerate
+fn main() -> Int {
+    let acc = 0;
+    for (i, x) in [1, 2, 3, 4] {
+        acc = acc + i * x;
+    }
+    let e = enumerate([10, 20]);
+    return acc + list_len(e);
+}

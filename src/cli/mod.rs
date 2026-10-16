@@ -11,7 +11,7 @@ pub fn run() {
         return;
     }
     if args.len() < 2 {
-        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp lsp | snp registry-serve [dir] [port] | snp emit-native <file.snp> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
+        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp lsp | snp registry-serve [dir] [port] | snp registry-publish <pkg-dir> [registry-root] | snp emit-native <file.snp> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
         return;
     }
     if args[1] == "repl" {
@@ -115,6 +115,24 @@ pub fn run() {
             }
             Err(e) => {
                 eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if args[1] == "registry-publish" {
+        let pkg = match args.get(2) {
+            Some(p) => p,
+            None => {
+                eprintln!("usage: snp registry-publish <pkg-dir> [registry-root]");
+                std::process::exit(1);
+            }
+        };
+        let root = args.get(3).map(|s| s.as_str()).unwrap_or(".");
+        match crate::registry::publish_local(std::path::Path::new(pkg), std::path::Path::new(root)) {
+            Ok(msg) => println!("{msg}"),
+            Err(e) => {
+                eprintln!("registry-publish: {e}");
                 std::process::exit(1);
             }
         }
@@ -239,16 +257,13 @@ pub fn run() {
             });
             match result {
                 Ok(()) => println!("ok: valid S+N++ program"),
-                Err(error) => {
-                    eprintln!("{}", diagnostic(&source, source_path, &error));
-                    std::process::exit(1);
-                }
+                Err(error) => eprintln!("{}", diagnostic(&source, source_path, &error)),
             }
         }
         "build" => match crate::loader::load_entry(source_path).and_then(|(program, _)| {
             crate::stdlib::resolve(&program.imports)?;
             crate::sema::check_program(&program)?;
-            crate::build_artifact(&source) // artifact from entry source for now
+            crate::vm::build_artifact(&source) // artifact from entry source for now
         }) {
             Ok(bytes) => {
                 let artifact = format!("{}.snpbc", source_path.display());
@@ -272,10 +287,7 @@ pub fn run() {
                     println!("program returned {}", show(&value))
                 }
                 Ok(_) => {}
-                Err(error) => {
-                    eprintln!("{}", diagnostic(&source, source_path, &error));
-                    std::process::exit(1);
-                }
+                Err(error) => eprintln!("{}", diagnostic(&source, source_path, &error)),
             }
         }
         command => eprintln!(
@@ -311,6 +323,7 @@ fn show(value: &crate::Value) -> String {
         crate::Value::Struct { name, fields: _ } => format!("{}{{..}}", name),
         crate::Value::Closure { name, captures } => format!("closure({name}, caps={})", captures.len()),
         crate::Value::Enum { name, variant, fields } => format!("{name}.{variant}(fields={})", fields.len()),
+        crate::Value::Tuple(items) => format!("tuple(len={})", items.len()),
     }
 }
 

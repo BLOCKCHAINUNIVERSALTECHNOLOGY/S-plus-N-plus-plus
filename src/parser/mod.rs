@@ -1,7 +1,7 @@
 //! S+N++ recursive-descent parser.
 
 use crate::ast::{
-    Expr, Function, InterpPart, MatchArm, Pattern, Program, Stmt, StructDef, Type, Visibility, TraitDef, TraitMethod,
+    Expr, Function, InterpPart, MatchArm, MatchExprArm, Pattern, Program, Stmt, StructDef, Type, Visibility, TraitDef, TraitMethod,
 };
 use crate::diagnostics::{offset_to_loc, SourceLoc};
 use crate::lexer::{SpannedToken, Token};
@@ -83,6 +83,8 @@ impl<'a> Parser<'a> {
         let mut traits = Vec::new();
         let mut functions = Vec::new();
         let mut externs = Vec::new();
+        let mut consts = Vec::new();
+        let mut uses = Vec::new();
         self.parse_items(
             &mut imports,
             &mut structs,
@@ -90,6 +92,8 @@ impl<'a> Parser<'a> {
             &mut traits,
             &mut functions,
             &mut externs,
+            &mut consts,
+            &mut uses,
             &[],
             0,
             true, // root: stop at Eof
@@ -101,6 +105,8 @@ impl<'a> Parser<'a> {
             traits,
             functions,
             externs,
+            consts,
+            uses,
         })
     }
 
@@ -112,6 +118,8 @@ impl<'a> Parser<'a> {
         traits: &mut Vec<TraitDef>,
         functions: &mut Vec<Function>,
         externs: &mut Vec<crate::ast::ExternFn>,
+        consts: &mut Vec<(String, Expr)>,
+        uses: &mut Vec<crate::ast::UseDecl>,
         module_path: &[String],
         depth: usize,
         until_eof: bool,
@@ -168,6 +176,22 @@ impl<'a> Parser<'a> {
                     }
                     traits.push(t);
                 }
+                Token::Const => {
+                    self.bump();
+                    let name = match self.bump() {
+                        Token::Ident(n) => n,
+                        _ => return Err(self.err("expected const name")),
+                    };
+                    self.eat(Token::Eq)?;
+                    let expr = self.expression()?;
+                    if *self.current() == Token::Semi {
+                        self.bump();
+                    }
+                    consts.push((name, expr));
+                }
+                Token::Use => {
+                    uses.push(self.parse_use()?);
+                }
                 Token::Fn => {
                     let mut f = self.function()?;
                     f.visibility = vis;
@@ -213,6 +237,8 @@ impl<'a> Parser<'a> {
                             traits,
                             functions,
                             externs,
+                            consts,
+                            uses,
                             &path,
                             depth + 1,
                             false,
@@ -494,6 +520,27 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             return Ok(Type::Ref(Box::new(self.parse_type()?)));
         }
         let base = match self.bump() {
+            Token::LParen => {
+                if *self.current() == Token::RParen {
+                    self.bump();
+                    Type::Tuple(vec![])
+                } else {
+                    let mut ts = vec![self.parse_type()?];
+                    while *self.current() == Token::Comma {
+                        self.bump();
+                        if *self.current() == Token::RParen {
+                            break;
+                        }
+                        ts.push(self.parse_type()?);
+                    }
+                    self.eat(Token::RParen)?;
+                    if ts.len() == 1 {
+                        ts.pop().unwrap()
+                    } else {
+                        Type::Tuple(ts)
+                    }
+                }
+            }
             Token::Ident(name) => match name.as_str() {
                 "Int" => Type::Int,
                 "String" => Type::Str,
@@ -503,6 +550,9 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                 "Thread" => Type::Thread,
                 "List" => Type::List,
                 "Map" => Type::Map,
+                other if other.len() == 1 && other.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => {
+                    Type::Generic(other.to_string())
+                }
                 other => Type::Struct(other.to_string()), // user type or generic
             },
             token => return Err(format!("expected type, got {:?}", token)),
@@ -543,6 +593,51 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
         } else {
             Ok(base)
         }
+    }
+
+    fn parse_use(&mut self) -> Result<crate::ast::UseDecl, String> {
+        self.eat(Token::Use)?;
+        let mut path = Vec::new();
+        loop {
+            match self.bump() {
+                Token::Ident(n) => path.push(n),
+                _ => return Err(self.err("expected path in use")),
+            }
+            if *self.current() == Token::Dot {
+                self.bump();
+                // brace form after path: use a.b.{x, y}
+                if *self.current() == Token::LBrace {
+                    self.bump();
+                    let mut names = Vec::new();
+                    loop {
+                        match self.bump() {
+                            Token::Ident(n) => names.push(n),
+                            _ => return Err(self.err("expected name in use { }")),
+                        }
+                        if *self.current() == Token::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    self.eat(Token::RBrace)?;
+                    if *self.current() == Token::Semi {
+                        self.bump();
+                    }
+                    return Ok(crate::ast::UseDecl { path, names });
+                }
+                continue;
+            }
+            break;
+        }
+        if *self.current() == Token::Semi {
+            self.bump();
+        }
+        // use a.b.c → path=[a,b,c], names=[]
+        Ok(crate::ast::UseDecl {
+            path,
+            names: vec![],
+        })
     }
 
     fn function(&mut self) -> Result<Function, String> {
@@ -641,19 +736,67 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
     fn statement(&mut self) -> Result<Stmt, String> {
         match self.current() {
             Token::Let => { self.bump(); self.let_statement() }
+            Token::Const => {
+                self.bump();
+                let name = match self.bump() {
+                    Token::Ident(n) => n,
+                    _ => return Err(self.err("expected const name")),
+                };
+                self.eat(Token::Eq)?;
+                let expr = self.expression()?;
+                Ok(Stmt::Const(name, expr))
+            }
+            Token::Defer => {
+                self.bump();
+                self.eat(Token::LBrace)?;
+                let body = self.block()?;
+                Ok(Stmt::Defer(body))
+            }
             Token::If => self.if_statement(),
             Token::While => self.while_statement(),
+            Token::Loop => {
+                self.bump();
+                self.eat(Token::LBrace)?;
+                // loop { } ≡ while true { }
+                Ok(Stmt::While(Expr::Bool(true), self.block()?))
+            }
             Token::For => self.for_statement(),
             Token::Match => self.match_statement(),
             Token::Return => { self.bump(); Ok(Stmt::Return(self.expression()?)) }
             Token::Break => { self.bump(); Ok(Stmt::Break) }
             Token::Continue => { self.bump(); Ok(Stmt::Continue) }
             Token::Ident(name) => {
-                // assignment or field assign or expr
+                // assignment or compound assignment or field assign or expr
                 if self.peek_at(1) == Some(&Token::Eq) {
                     let name = name.clone();
                     self.bump(); self.bump();
                     return Ok(Stmt::Assign(name, self.expression()?));
+                }
+                if matches!(
+                    self.peek_at(1),
+                    Some(
+                        Token::PlusEq
+                            | Token::MinusEq
+                            | Token::StarEq
+                            | Token::SlashEq
+                            | Token::PercentEq,
+                    )
+                ) {
+                    let name = name.clone();
+                    self.bump();
+                    let op = match self.bump() {
+                        Token::PlusEq => Token::Plus,
+                        Token::MinusEq => Token::Minus,
+                        Token::StarEq => Token::Star,
+                        Token::SlashEq => Token::Slash,
+                        Token::PercentEq => Token::Percent,
+                        _ => unreachable!(),
+                    };
+                    let rhs = self.expression()?;
+                    return Ok(Stmt::Assign(
+                        name.clone(),
+                        Expr::Binary(Box::new(Expr::Var(name)), op, Box::new(rhs)),
+                    ));
                 }
                 // Field assign: Ident Dot Ident Eq
                 if self.peek_at(1) == Some(&Token::Dot) {
@@ -705,6 +848,32 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
 
     fn if_statement(&mut self) -> Result<Stmt, String> {
         self.bump();
+        // `if let PATTERN = expr { ... }`
+        if *self.current() == Token::Let {
+            self.bump();
+            let pattern = self.pattern()?;
+            self.eat(Token::Eq)?;
+            let value = self.expression()?;
+            self.eat(Token::LBrace)?;
+            let yes = self.block()?;
+            let no = if *self.current() == Token::Else {
+                self.bump();
+                if *self.current() == Token::If {
+                    vec![self.if_statement()?]
+                } else {
+                    self.eat(Token::LBrace)?;
+                    self.block()?
+                }
+            } else {
+                Vec::new()
+            };
+            return Ok(Stmt::IfLet {
+                pattern,
+                value,
+                yes,
+                no,
+            });
+        }
         let condition = self.expression()?;
         self.eat(Token::LBrace)?;
         let yes = self.block()?;
@@ -724,6 +893,33 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
 
     fn while_statement(&mut self) -> Result<Stmt, String> {
         self.bump();
+        // `while let PATTERN = expr { body }`
+        if *self.current() == Token::Let {
+            self.bump();
+            let pattern = self.pattern()?;
+            self.eat(Token::Eq)?;
+            let value = self.expression()?;
+            self.eat(Token::LBrace)?;
+            let body = self.block()?;
+            // desugar: loop { match value { pat => body, _ => break } }
+            // value re-evaluated each time via temporary assign is hard; use while true + match
+            let match_stmt = Stmt::Match {
+                scrutinee: value,
+                arms: vec![
+                    crate::ast::MatchArm {
+                        pattern,
+                        guard: None,
+                        body,
+                    },
+                    crate::ast::MatchArm {
+                        pattern: crate::ast::Pattern::Wildcard,
+                        guard: None,
+                        body: vec![Stmt::Break],
+                    },
+                ],
+            };
+            return Ok(Stmt::While(Expr::Bool(true), vec![match_stmt]));
+        }
         let condition = self.expression()?;
         self.eat(Token::LBrace)?;
         Ok(Stmt::While(condition, self.block()?))
@@ -731,23 +927,59 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
 
     fn for_statement(&mut self) -> Result<Stmt, String> {
         self.bump(); // for
-        let var = match self.bump() {
-            Token::Ident(n) => n,
-            _ => return Err("expected loop variable after `for`".into()),
+        // `for x in ...` or `for (i, x) in ...` (indexed)
+        let (index, var) = if *self.current() == Token::LParen {
+            self.bump();
+            let a = match self.bump() {
+                Token::Ident(n) => n,
+                _ => return Err("expected name in for-binding".into()),
+            };
+            if *self.current() == Token::Comma {
+                self.bump();
+                let b = match self.bump() {
+                    Token::Ident(n) => n,
+                    _ => return Err("expected value name after `,` in for (i, x)".into()),
+                };
+                self.eat(Token::RParen)?;
+                (Some(a), b)
+            } else {
+                self.eat(Token::RParen)?;
+                (None, a)
+            }
+        } else {
+            let var = match self.bump() {
+                Token::Ident(n) => n,
+                _ => return Err("expected loop variable after `for`".into()),
+            };
+            (None, var)
         };
         self.eat(Token::In)?;
-        // Could be range `a..b` or collection expression
         let first = self.expression()?;
-        if *self.current() == Token::DotDot {
+        if matches!(*self.current(), Token::DotDot | Token::DotDotEq) {
+            if index.is_some() {
+                return Err("`for (i, x) in a..b` is not supported; use `for x in a..b`".into());
+            }
+            let inclusive = *self.current() == Token::DotDotEq;
             self.bump();
             let end = self.expression()?;
             self.eat(Token::LBrace)?;
             let body = self.block()?;
-            Ok(Stmt::For { var, start: first, end, body })
+            Ok(Stmt::For {
+                var,
+                start: first,
+                end,
+                inclusive,
+                body,
+            })
         } else {
             self.eat(Token::LBrace)?;
             let body = self.block()?;
-            Ok(Stmt::ForIn { var, iter: first, body })
+            Ok(Stmt::ForIn {
+                var,
+                index,
+                iter: first,
+                body,
+            })
         }
     }
 
@@ -793,7 +1025,30 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
 
     fn primary_pattern(&mut self) -> Result<Pattern, String> {
         match self.bump() {
+            Token::Underscore => Ok(Pattern::Wildcard),
             Token::Ident(n) if n == "_" => Ok(Pattern::Wildcard),
+            Token::LParen => {
+                if *self.current() == Token::RParen {
+                    self.bump();
+                    return Ok(Pattern::Tuple(vec![]));
+                }
+                let first = self.pattern()?;
+                if *self.current() == Token::Comma {
+                    let mut items = vec![first];
+                    while *self.current() == Token::Comma {
+                        self.bump();
+                        if *self.current() == Token::RParen {
+                            break;
+                        }
+                        items.push(self.pattern()?);
+                    }
+                    self.eat(Token::RParen)?;
+                    Ok(Pattern::Tuple(items))
+                } else {
+                    self.eat(Token::RParen)?;
+                    Ok(first)
+                }
+            }
             Token::Ident(n) => {
                 if *self.current() == Token::Dot {
                     self.bump();
@@ -889,7 +1144,36 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
     }
 
 
-    fn expression(&mut self) -> Result<Expr, String> { self.compare() }
+    fn expression(&mut self) -> Result<Expr, String> { self.logic_or() }
+
+    fn logic_or(&mut self) -> Result<Expr, String> {
+        let mut e = self.logic_and()?;
+        while *self.current() == Token::PipePipe {
+            self.bump();
+            e = Expr::Binary(Box::new(e), Token::PipePipe, Box::new(self.logic_and()?));
+        }
+        Ok(e)
+    }
+
+    fn logic_and(&mut self) -> Result<Expr, String> {
+        let mut e = self.pipeline()?;
+        while *self.current() == Token::AmpAmp {
+            self.bump();
+            e = Expr::Binary(Box::new(e), Token::AmpAmp, Box::new(self.pipeline()?));
+        }
+        Ok(e)
+    }
+
+    /// `a |> f` → `f(a)`; `a |> f(x)` → `f(a, x)` (first-arg pipeline)
+    fn pipeline(&mut self) -> Result<Expr, String> {
+        let mut e = self.compare()?;
+        while *self.current() == Token::PipeGt {
+            self.bump();
+            let right = self.compare()?;
+            e = pipe_apply(e, right)?;
+        }
+        Ok(e)
+    }
 
     fn compare(&mut self) -> Result<Expr, String> {
         let mut e = self.add()?;
@@ -911,7 +1195,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
 
     fn multiply(&mut self) -> Result<Expr, String> {
         let mut e = self.unary()?;
-        while matches!(self.current(), Token::Star | Token::Slash) {
+        while matches!(self.current(), Token::Star | Token::Slash | Token::Percent) {
             let op = self.bump();
             e = Expr::Binary(Box::new(e), op, Box::new(self.unary()?));
         }
@@ -978,10 +1262,36 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                         }
                     }
                     self.eat(Token::RParen)?;
-                    // `module.fn(args)` or `Enum.Variant(args)` — resolve in typecheck:
-                    // emit Call with dotted name; enum construction desugars when name is an enum.
-                    if let Expr::Var(base) = obj.as_ref() {
-                        e = Expr::Call(format!("{base}.{method}"), args);
+                    // Uppercase path → module/type call (`Math.max`, `Option.Some`)
+                    // lowercase receiver → method sugar (`xs.len()`, `s.trim()`)
+                    if let Some(base) = dotted_var_path(obj.as_ref()) {
+                        let first = base.split('.').next().unwrap_or("");
+                        let is_type_or_mod = first
+                            .chars()
+                            .next()
+                            .map(|c| c.is_uppercase())
+                            .unwrap_or(false);
+                        // Intrinsic methods on a single var → MethodCall (`xs.len()`).
+                        // Otherwise dotted Call (`combat.damage`, `a.b.f`, `Option.Some`).
+                        let intrinsic = matches!(
+                            method.as_str(),
+                            "len" | "get" | "push" | "set" | "contains" | "rev" | "sort"
+                                | "sum" | "min" | "max" | "is_empty" | "map" | "filter"
+                                | "fold" | "slice" | "unique" | "find" | "flatten" | "chunk"
+                                | "take" | "drop" | "any" | "all" | "split" | "replace"
+                                | "starts_with" | "ends_with" | "upper" | "lower" | "lines"
+                                | "index_of" | "substring" | "repeat" | "trim" | "has"
+                                | "keys" | "values" | "remove"
+                        );
+                        if is_type_or_mod || base.contains('.') || !intrinsic {
+                            e = Expr::Call(format!("{base}.{method}"), args);
+                        } else {
+                            e = Expr::MethodCall {
+                                receiver: obj,
+                                method,
+                                args,
+                            };
+                        }
                     } else {
                         e = Expr::MethodCall {
                             receiver: obj,
@@ -1001,6 +1311,9 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                     self.eat(Token::RParen)?;
                     e = Expr::CallExpr(Box::new(e), args);
                 }
+            } else if *self.current() == Token::Question {
+                self.bump();
+                e = Expr::Try(Box::new(e));
             } else {
                 break;
             }
@@ -1014,7 +1327,99 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             Token::Str(s) => Ok(self.maybe_interp(s)),
             Token::True => Ok(Expr::Bool(true)),
             Token::False => Ok(Expr::Bool(false)),
+            Token::Underscore => Ok(Expr::Hole),
             Token::Fn => self.parse_lambda(),
+            Token::LParen => {
+                // grouping `(e)` or tuple `(a, b, ...)` or unit `()`
+                if *self.current() == Token::RParen {
+                    self.bump();
+                    return Ok(Expr::Tuple(vec![]));
+                }
+                let first = self.expression()?;
+                if *self.current() == Token::Comma {
+                    let mut items = vec![first];
+                    while *self.current() == Token::Comma {
+                        self.bump();
+                        if *self.current() == Token::RParen {
+                            break; // trailing comma
+                        }
+                        items.push(self.expression()?);
+                    }
+                    self.eat(Token::RParen)?;
+                    Ok(Expr::Tuple(items))
+                } else {
+                    self.eat(Token::RParen)?;
+                    Ok(first) // grouping
+                }
+            }
+            Token::If => {
+                // if-expr: if cond { then } else { else }
+                let cond = self.expression()?;
+                self.eat(Token::LBrace)?;
+                let then_branch = self.expression()?;
+                self.eat(Token::RBrace)?;
+                self.eat(Token::Else)?;
+                self.eat(Token::LBrace)?;
+                let else_branch = self.expression()?;
+                self.eat(Token::RBrace)?;
+                Ok(Expr::IfExpr {
+                    cond: Box::new(cond),
+                    then_branch: Box::new(then_branch),
+                    else_branch: Box::new(else_branch),
+                })
+            }
+            Token::Match => {
+                // match-expr: match e { pat => expr, ... }
+                let scrutinee = self.expression()?;
+                self.eat(Token::LBrace)?;
+                let mut arms = Vec::new();
+                while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+                    let pat = self.pattern()?;
+                    let guard = if *self.current() == Token::If {
+                        self.bump();
+                        Some(self.expression()?)
+                    } else {
+                        None
+                    };
+                    self.eat(Token::FatArrow)?;
+                    // expression form: not a block
+                    if *self.current() == Token::LBrace {
+                        return Err(self.err(
+                            "match-expression arms use `=> expr` (not `{ ... }` blocks); use statement `match` for blocks",
+                        ));
+                    }
+                    let value = self.expression()?;
+                    arms.push(MatchExprArm {
+                        pattern: pat,
+                        guard,
+                        value,
+                    });
+                    if *self.current() == Token::Comma {
+                        self.bump();
+                    }
+                }
+                self.eat(Token::RBrace)?;
+                Ok(Expr::MatchExpr {
+                    scrutinee: Box::new(scrutinee),
+                    arms,
+                })
+            }
+            Token::LBracket => {
+                // list literal: [1, 2, 3]
+                let mut args = Vec::new();
+                if *self.current() != Token::RBracket {
+                    loop {
+                        args.push(self.expression()?);
+                        if *self.current() == Token::Comma {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.eat(Token::RBracket)?;
+                Ok(Expr::Call("list".into(), args))
+            }
             Token::Ident(name) => {
                 // Struct literal: Name { field: expr, ... }
                 if *self.current() == Token::LBrace {
@@ -1136,6 +1541,68 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
         } else {
             Expr::Interp(parts)
         }
+    }
+}
+
+fn is_pipe_hole(e: &Expr) -> bool {
+    match e {
+        Expr::Hole => true,
+        Expr::Var(n) if n == "_" => true,
+        _ => false,
+    }
+}
+
+fn fill_holes(left: Expr, args: Vec<Expr>) -> Vec<Expr> {
+    let mut filled = Vec::with_capacity(args.len());
+    let mut used = false;
+    for a in args {
+        if is_pipe_hole(&a) {
+            filled.push(left.clone());
+            used = true;
+        } else {
+            filled.push(a);
+        }
+    }
+    if !used {
+        // first-arg style when no `_` present
+        let mut a = vec![left];
+        a.extend(filled);
+        a
+    } else {
+        filled
+    }
+}
+
+fn pipe_apply(left: Expr, right: Expr) -> Result<Expr, String> {
+    match right {
+        Expr::Call(name, args) => Ok(Expr::Call(name, fill_holes(left, args))),
+        Expr::Var(name) => Ok(Expr::Call(name, vec![left])),
+        Expr::CallExpr(callee, args) => Ok(Expr::CallExpr(callee, fill_holes(left, args))),
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => Ok(Expr::MethodCall {
+            receiver,
+            method,
+            args: fill_holes(left, args),
+        }),
+        other => Err(format!(
+            "pipeline `|>` right-hand side must be a call or function name, got {:?}",
+            std::mem::discriminant(&other)
+        )),
+    }
+}
+
+/// Flatten `a.b.c` Field chains into `"a.b.c"` when every step is a field on a path root Var.
+fn dotted_var_path(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Var(n) => Some(n.clone()),
+        Expr::Field(inner, f) => {
+            let base = dotted_var_path(inner)?;
+            Some(format!("{base}.{f}"))
+        }
+        _ => None,
     }
 }
 

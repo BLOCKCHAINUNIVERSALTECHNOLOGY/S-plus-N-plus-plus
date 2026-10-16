@@ -50,3 +50,13 @@ Register allocation: linear scan over MIR locals (research).
 ## Non-goals (0.5)
 - Full GC / JIT deoptimize
 - Cross-compile matrix in CI
+
+
+## Code hook (0.5.2)
+
+```text
+crate::backend::cranelift_research::status()
+→ "cranelift: not linked (research only — see docs/NATIVE.md)"
+```
+
+Real object emit stays behind a future Cargo feature so the default `snp` binary stays light.

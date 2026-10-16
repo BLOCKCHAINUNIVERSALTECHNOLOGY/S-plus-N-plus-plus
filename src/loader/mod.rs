@@ -65,6 +65,8 @@ pub fn load_entry(entry: &Path) -> Result<(Program, Vec<LoadedUnit>), String> {
             traits: all_traits,
             functions: all_functions,
             externs: all_externs,
+            consts: vec![],
+            uses: vec![],
         },
         units,
     ))
@@ -176,6 +178,8 @@ fn load_recursive(
             traits: vec![],
             functions: vec![],
             externs: vec![],
+            consts: vec![],
+            uses: vec![],
         },
     });
 

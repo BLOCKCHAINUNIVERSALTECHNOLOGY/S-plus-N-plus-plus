@@ -1,0 +1,10 @@
+# S+N++ 2.5 — method sugar
+fn main() -> Int {
+    let xs = [10, 20, 30, 40];
+    let head = xs.take(2);
+    let tail = xs.drop(2);
+    let name = "  snp  ".trim();
+    assert(name.len() == 3, "trim");
+    assert(xs.contains(20), "has 20");
+    return head.sum() + tail.len() + name.len();
+}

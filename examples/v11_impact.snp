@@ -1,0 +1,15 @@
+// S+N++ 1.1 — compound assign, loop, slice
+fn main() -> Int {
+    let n = 0;
+    loop {
+        n += 1;
+        if n >= 5 { break; }
+    }
+    let xs = list_slice([1, 2, 3, 4, 5, 6], 1, 5);
+    let s = 0;
+    for i in 0..list_len(xs) {
+        s += list_get(xs, i);
+    }
+    assert(s == 14, "2+3+4+5");
+    return n + s;
+}

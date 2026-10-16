@@ -1,0 +1,10 @@
+// S+N++ 1.2 — && ||, range, list helpers
+fn main() -> Int {
+    let xs = range(0, 6)
+        |> list_filter(fn(x: Int) -> Bool { return x > 0 && x < 5; })
+        |> list_rev();
+    if list_contains(xs, 3) || list_contains(xs, 99) {
+        return list_len(xs) + list_get(xs, 0);
+    }
+    return 0;
+}

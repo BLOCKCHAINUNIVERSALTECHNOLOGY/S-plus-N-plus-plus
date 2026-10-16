@@ -1,0 +1,29 @@
+; S+N++ native lowering plan (research, non-executable)
+; See docs/NATIVE.md — prefer Cranelift for a future real JIT.
+
+fn add (params: ["a", "b"]) {
+  bb0:
+    ; MIR  Binary { dest: "_bin0", op: Plus, left: Local("a"), right: Local("b") }
+    ; NATIVE ≈ Plus %_bin0, Local("a"), Local("b")
+    ; TERM Return(Some(Local("_bin0")))
+    ; NATIVE ≈ ret Some(Local("_bin0"))
+  bb1:
+    ; TERM Unreachable
+    ; NATIVE ≈ ud2
+}
+
+fn main (params: []) {
+  bb0:
+    ; MIR  Call { dest: "_call0", name: "add", args: [ConstInt(20), ConstInt(22)] }
+    ; NATIVE ≈ call add -> %_call0  args=[ConstInt(20), ConstInt(22)]
+    ; MIR  Print(Local("_call0"))
+    ; NATIVE ≈ op Print(Local("_call0"))
+    ; TERM Return(Some(ConstInt(0)))
+    ; NATIVE ≈ ret Some(ConstInt(0))
+  bb1:
+    ; TERM Unreachable
+    ; NATIVE ≈ ud2
+}
+
+; register allocation: linear scan over locals (TODO)
+; ABI: system-v / win64 TBD for cranelift feature

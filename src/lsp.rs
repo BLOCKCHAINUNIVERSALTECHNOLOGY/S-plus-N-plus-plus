@@ -11,7 +11,7 @@
 use crate::parser;
 use crate::sema;
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 #[derive(Clone, Default)]
 struct DocState {

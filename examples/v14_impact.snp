@@ -1,0 +1,9 @@
+// S+N++ 1.4 — min/max/any/all, string index
+fn main() -> Int {
+    let xs = [9, 2, 5, 1];
+    assert(list_any(xs, fn(x: Int) -> Bool { return x > 8; }), "has 9");
+    assert(list_all(xs, fn(x: Int) -> Bool { return x > 0; }), "all positive");
+    let i = str_index_of("s+n++", "+");
+    print(str_substring("s+n++", 0, 3));
+    return list_min(xs) + list_max(xs) + i;
+}

@@ -4,15 +4,16 @@
 pub enum Token {
     // Keywords
     Fn, Let, If, Else, While, For, In, Return, Break, Continue,
-    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where,
+    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where, Const, Use, Defer, Loop,
     // Literals & identifiers
-    Ident(String), Int(i64), Str(String),
+    Ident(String), Int(i64), Str(String), Underscore,
     // Operators
-    Amp, Plus, Minus, Star, Slash, Bang, Eq, EqEq, BangEq,
+    Amp, AmpAmp, Plus, Minus, Star, Slash, Percent, Bang, Eq, EqEq, BangEq,
+    PlusEq, MinusEq, StarEq, SlashEq, PercentEq, PipePipe,
     Lt, Lte, Gt, Gte,
     // Delimiters
     LParen, RParen, LBrace, RBrace, LBracket, RBracket,
-    Comma, Colon, Dot, DotDot, Arrow, FatArrow, Semi, Pipe,
+    Comma, Colon, Dot, DotDot, DotDotEq, Arrow, FatArrow, Semi, Pipe, PipeGt, Question,
     // String interpolation: "a{expr}b" produces StrPart / InterpStart / ...
     // For simplicity, full strings with { } are handled in parser via raw Str
     // and a secondary scan. Lexer still emits plain Str.
@@ -43,10 +44,6 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
             while i < chars.len() && chars[i] != '\n' { i += 1; }
             continue;
         }
-        if c == '/' && i + 1 < chars.len() && chars[i + 1] == '/' {
-            while i < chars.len() && chars[i] != '\n' { i += 1; }
-            continue;
-        }
         if c.is_ascii_digit() {
             let s = i;
             while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
@@ -67,7 +64,8 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
                 "in" => Token::In, "return" => Token::Return, "break" => Token::Break,
                 "continue" => Token::Continue, "true" => Token::True, "false" => Token::False,
                 "mut" => Token::Mut, "import" => Token::Import, "struct" => Token::Struct,
-                "match" => Token::Match, "mod" => Token::Mod, "extern" => Token::Extern, "impl" => Token::Impl, "enum" => Token::Enum, "pub" => Token::Pub, "trait" => Token::Trait, "where" => Token::Where,
+                "match" => Token::Match, "mod" => Token::Mod, "extern" => Token::Extern, "impl" => Token::Impl, "enum" => Token::Enum, "pub" => Token::Pub, "trait" => Token::Trait, "where" => Token::Where, "const" => Token::Const, "use" => Token::Use, "defer" => Token::Defer, "loop" => Token::Loop,
+                _ if word == "_" => Token::Underscore,
                 _ => Token::Ident(word),
             };
             out.push(SpannedToken { token, start: s, end: i });
@@ -102,11 +100,58 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
 
         let start = i;
         let token = match c {
-            '&' => Token::Amp,
-            '+' => Token::Plus,
-            '*' => Token::Star,
-            '/' => Token::Slash,
-            '|' => Token::Pipe,
+            '&' => {
+                if i + 1 < chars.len() && chars[i + 1] == '&' {
+                    i += 1;
+                    Token::AmpAmp
+                } else {
+                    Token::Amp
+                }
+            }
+            '+' => {
+                if i + 1 < chars.len() && chars[i + 1] == '=' {
+                    i += 1;
+                    Token::PlusEq
+                } else {
+                    Token::Plus
+                }
+            }
+            '*' => {
+                if i + 1 < chars.len() && chars[i + 1] == '=' {
+                    i += 1;
+                    Token::StarEq
+                } else {
+                    Token::Star
+                }
+            }
+            '/' => {
+                if i + 1 < chars.len() && chars[i + 1] == '=' {
+                    i += 1;
+                    Token::SlashEq
+                } else {
+                    Token::Slash
+                }
+            }
+            '%' => {
+                if i + 1 < chars.len() && chars[i + 1] == '=' {
+                    i += 1;
+                    Token::PercentEq
+                } else {
+                    Token::Percent
+                }
+            }
+            '|' => {
+                if i + 1 < chars.len() && chars[i + 1] == '>' {
+                    i += 1;
+                    Token::PipeGt
+                } else if i + 1 < chars.len() && chars[i + 1] == '|' {
+                    i += 1;
+                    Token::PipePipe
+                } else {
+                    Token::Pipe
+                }
+            }
+            '?' => Token::Question,
             '(' => Token::LParen,
             ')' => Token::RParen,
             '{' => Token::LBrace,
@@ -117,10 +162,28 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
             ':' => Token::Colon,
             ';' => Token::Semi,
             '.' => {
-                if i + 1 < chars.len() && chars[i + 1] == '.' { i += 1; Token::DotDot } else { Token::Dot }
+                if i + 1 < chars.len() && chars[i + 1] == '.' {
+                    i += 1;
+                    if i + 1 < chars.len() && chars[i + 1] == '=' {
+                        i += 1;
+                        Token::DotDotEq
+                    } else {
+                        Token::DotDot
+                    }
+                } else {
+                    Token::Dot
+                }
             }
             '-' => {
-                if i + 1 < chars.len() && chars[i + 1] == '>' { i += 1; Token::Arrow } else { Token::Minus }
+                if i + 1 < chars.len() && chars[i + 1] == '>' {
+                    i += 1;
+                    Token::Arrow
+                } else if i + 1 < chars.len() && chars[i + 1] == '=' {
+                    i += 1;
+                    Token::MinusEq
+                } else {
+                    Token::Minus
+                }
             }
             '=' => {
                 if i + 1 < chars.len() && chars[i + 1] == '=' { i += 1; Token::EqEq }

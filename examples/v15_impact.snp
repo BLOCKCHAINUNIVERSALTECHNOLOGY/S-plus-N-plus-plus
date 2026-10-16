@@ -1,0 +1,9 @@
+// S+N++ 1.5 — maps, flatten, repeat
+fn main() -> Int {
+    let m = map("hp", 100, "mp", 50);
+    let m2 = map_remove(m, "mp");
+    assert(map_len(m2) == 1, "one key");
+    let flat = list_flatten([[1, 2], [3, 4]]);
+    print(str_repeat("*", 3));
+    return list_sum(flat) + map_get(m2, "hp");
+}
