@@ -1,0 +1,30 @@
+// Ship-proof: mini scoreboard - pure S+N++
+// Run: snp run examples/ship_scoreboard.snp
+
+fn score_line(name: String, pts: Int) -> String {
+    return str_join([name, " => ", pts], "");
+}
+
+fn main() -> Int {
+    let names = ["Alpha", "Bravo", "Charlie"];
+    let points = [12, 9, 15];
+
+    let total = 0;
+    for (idx, val) in points {
+        total = total + val;
+        let row = score_line(list_get(names, idx), val);
+        print(row);
+    }
+
+    let band = if total >= 30 { 2 } else { 1 };
+    let label = if band == 2 { "hot" } else { "warm" };
+    print(str_join(["total=", total, " (", label, ")"], ""));
+
+    let high = points
+        |> list_filter(fn(x: Int) -> Bool { return x >= 10; })
+        |> list_len();
+
+    assert(high == 2, "two high scores");
+    assert(total == 36, "12+9+15");
+    return total + high;
+}

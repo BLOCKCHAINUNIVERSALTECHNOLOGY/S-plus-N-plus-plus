@@ -1,0 +1,11 @@
+// Float + parse demo
+fn main() -> Int {
+    let x = 2.5;
+    let y = 1.5;
+    let z = x * y + 1.0;
+    let s = float_to_str(z);
+    let back = str_parse_float(s);
+    let n = str_parse_int("42");
+    assert(n == 42, "parse int");
+    return floor(back) + n;
+}

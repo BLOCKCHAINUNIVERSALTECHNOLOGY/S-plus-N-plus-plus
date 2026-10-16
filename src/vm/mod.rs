@@ -96,6 +96,7 @@ struct LoopCtx {
 fn values_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => (x - y).abs() < 1e-12,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Unit, Value::Unit) => true,
@@ -208,6 +209,14 @@ fn truth(v: &Value) -> bool {
     v.is_truthy()
 }
 
+fn as_float(v: &Value) -> Option<f64> {
+    match v {
+        Value::Float(x) => Some(*x),
+        Value::Int(x) => Some(*x as f64),
+        _ => None,
+    }
+}
+
 fn bin(a: Value, o: &Token, b: Value) -> Result<Value, String> {
     match (a, b, o) {
         (Value::Int(x), Value::Int(y), Token::Plus) => Ok(Value::Int(x + y)),
@@ -222,6 +231,24 @@ fn bin(a: Value, o: &Token, b: Value) -> Result<Value, String> {
         (Value::Int(x), Value::Int(y), Token::Gt) => Ok(Value::Bool(x > y)),
         (Value::Int(x), Value::Int(y), Token::Gte) => Ok(Value::Bool(x >= y)),
         (Value::Str(x), Value::Str(y), Token::Plus) => Ok(Value::Str(x + &y)),
+        (x, y, op) if as_float(&x).is_some() && as_float(&y).is_some() => {
+            let fx = as_float(&x).unwrap();
+            let fy = as_float(&y).unwrap();
+            match op {
+                Token::Plus => Ok(Value::Float(fx + fy)),
+                Token::Minus => Ok(Value::Float(fx - fy)),
+                Token::Star => Ok(Value::Float(fx * fy)),
+                Token::Slash => Ok(Value::Float(fx / fy)),
+                Token::Percent => Ok(Value::Float(fx % fy)),
+                Token::EqEq => Ok(Value::Bool((fx - fy).abs() < 1e-12)),
+                Token::BangEq => Ok(Value::Bool((fx - fy).abs() >= 1e-12)),
+                Token::Lt => Ok(Value::Bool(fx < fy)),
+                Token::Lte => Ok(Value::Bool(fx <= fy)),
+                Token::Gt => Ok(Value::Bool(fx > fy)),
+                Token::Gte => Ok(Value::Bool(fx >= fy)),
+                _ => Err("invalid float operands".into()),
+            }
+        }
         (x, y, Token::EqEq) => Ok(Value::Bool(x == y)),
         (x, y, Token::BangEq) => Ok(Value::Bool(x != y)),
         _ => Err("invalid operands".into()),
@@ -340,7 +367,7 @@ fn free_vars_expr(x: &Expr, bound: &HashSet<String>, out: &mut HashSet<String>) 
             }
             free_vars_stmts(body, &inner, out);
         }
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         Expr::MethodCall { receiver, args, .. } => {
             free_vars_expr(receiver, bound, out);
             for a in args {
@@ -428,6 +455,7 @@ fn free_vars_stmts(xs: &[Stmt], bound: &HashSet<String>, out: &mut HashSet<Strin
 fn compile_expr(x: &Expr, c: &mut Chunk) -> Result<(), String> {
     match x {
         Expr::Int(v) => c.code.push(Op::Const(Value::Int(*v))),
+        Expr::Float(v) => c.code.push(Op::Const(Value::Float(*v))),
         Expr::Str(v) => c.code.push(Op::Const(Value::Str(v.clone()))),
         Expr::Bool(v) => c.code.push(Op::Const(Value::Bool(*v))),
         Expr::Var(n) => c.code.push(Op::Load(n.clone())),
@@ -1845,6 +1873,59 @@ impl BytecodeVm {
                 }
                 return Err("str_lower expects String".into());
             }
+            "str_parse_int" => {
+                if let Some(Value::Str(s)) = args.get(0) {
+                    return s
+                        .trim()
+                        .parse::<i64>()
+                        .map(Value::Int)
+                        .map_err(|_| format!("str_parse_int: cannot parse `{s}`"));
+                }
+                return Err("str_parse_int expects String".into());
+            }
+            "str_parse_float" => {
+                if let Some(Value::Str(s)) = args.get(0) {
+                    return s
+                        .trim()
+                        .parse::<f64>()
+                        .map(Value::Float)
+                        .map_err(|_| format!("str_parse_float: cannot parse `{s}`"));
+                }
+                return Err("str_parse_float expects String".into());
+            }
+            "int_to_str" => {
+                if let Some(Value::Int(n)) = args.get(0) {
+                    return Ok(Value::Str(n.to_string()));
+                }
+                return Err("int_to_str expects Int".into());
+            }
+            "float_to_str" => {
+                if let Some(Value::Float(n)) = args.get(0) {
+                    return Ok(Value::Str(n.to_string()));
+                }
+                if let Some(Value::Int(n)) = args.get(0) {
+                    return Ok(Value::Str((*n as f64).to_string()));
+                }
+                return Err("float_to_str expects Float".into());
+            }
+            "floor" => {
+                if let Some(v) = args.get(0).and_then(as_float) {
+                    return Ok(Value::Int(v.floor() as i64));
+                }
+                return Err("floor expects Float or Int".into());
+            }
+            "ceil" => {
+                if let Some(v) = args.get(0).and_then(as_float) {
+                    return Ok(Value::Int(v.ceil() as i64));
+                }
+                return Err("ceil expects Float or Int".into());
+            }
+            "round" => {
+                if let Some(v) = args.get(0).and_then(as_float) {
+                    return Ok(Value::Int(v.round() as i64));
+                }
+                return Err("round expects Float or Int".into());
+            }
             "str_trim" => {
                 if let Some(Value::Str(s)) = args.get(0) {
                     return Ok(Value::Str(s.trim().to_string()));
@@ -1921,7 +2002,17 @@ impl BytecodeVm {
                     locals
                         .get(n)
                         .cloned()
-                        .ok_or_else(|| format!("undefined variable `{n}`"))?,
+                        .ok_or_else(|| {
+                            let where_ = CALL_STACK.with(|s| {
+                                let frames = s.borrow();
+                                if frames.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" (while evaluating `{}`)", frames.join(" -> "))
+                                }
+                            });
+                            format!("undefined variable `{n}`{where_}")
+                        })?,
                 ),
                 Op::Store(n) => {
                     let v = stack.pop().ok_or("stack underflow")?;
@@ -1962,7 +2053,8 @@ impl BytecodeVm {
                     let v = stack.pop().ok_or("stack underflow")?;
                     match v {
                         Value::Int(x) => stack.push(Value::Int(-x)),
-                        _ => return Err("unary - expects Int".into()),
+                        Value::Float(x) => stack.push(Value::Float(-x)),
+                        _ => return Err("unary - expects Int or Float".into()),
                     }
                 }
                 Op::Not => {
@@ -2432,6 +2524,7 @@ fn emit_operand(op: &crate::mir::MirOperand, code: &mut Vec<Op>) {
     use crate::mir::MirOperand;
     match op {
         MirOperand::ConstInt(n) => code.push(Op::Const(Value::Int(*n))),
+        MirOperand::ConstFloat(n) => code.push(Op::Const(Value::Float(*n))),
         MirOperand::ConstBool(x) => code.push(Op::Const(Value::Bool(*x))),
         MirOperand::ConstStr(s) => code.push(Op::Const(Value::Str(s.clone()))),
         MirOperand::ConstUnit => code.push(Op::Const(Value::Unit)),
@@ -2765,6 +2858,143 @@ mod tests {
             fn main() -> Int { return a.b.v(); }
         "#;
         assert_eq!(execute(s).unwrap(), Value::Int(11));
+    }
+
+    #[test]
+    fn stmt_match_option_binding() {
+        let s = r#"
+            fn main() -> Int {
+                let o = Option.Some(7);
+                match o {
+                    Option.Some(n) => { return n + 1; }
+                    Option.None => { return 0; }
+                    _ => { return 99; }
+                }
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(8));
+    }
+
+    #[test]
+    fn harden_match_expr_binding() {
+        let s = r#"
+            fn main() -> Int {
+                let o = Option.Some(7);
+                return match o {
+                    Option.Some(n) => n + 1,
+                    Option.None => 0,
+                    _ => 99,
+                };
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(8));
+    }
+
+    #[test]
+    fn harden_move_list_rejected() {
+        let s = r#"
+            fn main() -> Int {
+                let xs = [1, 2, 3];
+                let ys = list_rev(xs);
+                return list_len(xs) + list_len(ys);
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(err.contains("moved") || err.contains("borrow"), "got: {err}");
+    }
+
+    #[test]
+    fn float_arith_basic() {
+        let s = r#"
+            fn main() -> Int {
+                let x = 2.5;
+                let y = 4.0;
+                return floor(x * y);
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(10));
+    }
+
+    #[test]
+    fn str_parse_roundtrip() {
+        let s = r#"
+            fn main() -> Int {
+                let n = str_parse_int("7");
+                let f = str_parse_float("1.5");
+                return n + floor(f);
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(8));
+    }
+
+    #[test]
+    fn harden_let_call_in_for() {
+        let s = r#"
+            fn score_line(name: String, pts: Int) -> String {
+                return name;
+            }
+            fn main() -> Int {
+                let names = ["Alpha", "Bravo", "Charlie"];
+                let points = [12, 9, 15];
+                let total = 0;
+                for (idx, val) in points {
+                    total = total + val + idx;
+                    let row = score_line(list_get(names, idx), val);
+                    print(row);
+                }
+                return total;
+            }
+        "#;
+        // 12+0 + 9+1 + 15+2 = 39
+        assert_eq!(execute(s).unwrap(), Value::Int(39));
+    }
+
+    #[test]
+    fn ship_scoreboard_smoke() {
+        let s = r#"
+            fn score_line(name: String, pts: Int) -> String {
+                return name;
+            }
+            fn main() -> Int {
+                let points = [12, 9, 15];
+                let total = 0;
+                for (idx, val) in points {
+                    total = total + val + idx;
+                    score_line("x", val);
+                }
+                return total;
+            }
+        "#;
+        let r = execute(s);
+        assert!(r.is_ok(), "err: {:?}", r.err());
+        assert_eq!(r.unwrap(), Value::Int(39));
+    }
+
+    #[test]
+    fn harden_error_mentions_clone_help() {
+        let s = r#"
+            fn main() -> Int {
+                let xs = [1, 2];
+                let ys = list_rev(xs);
+                return list_len(xs);
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(err.contains("moved"), "{err}");
+        assert!(err.contains("clone") || err.contains("help"), "{err}");
+    }
+
+    #[test]
+    fn harden_copyable_int_ok() {
+        let s = r#"
+            fn main() -> Int {
+                let n = 5;
+                let a = n + 1;
+                let b = n + 2;
+                return a + b;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(13));
     }
 
     #[test]

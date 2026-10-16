@@ -52,6 +52,7 @@ pub enum MirTerminator {
 #[derive(Debug, Clone)]
 pub enum MirOperand {
     ConstInt(i64),
+    ConstFloat(f64),
     ConstBool(bool),
     ConstStr(String),
     ConstUnit,
@@ -442,10 +443,15 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
                     value: MirOperand::Local(idx.clone()),
                 });
             }
+            let elem_tmp = b.fresh("elem");
             b.push(MirInstr::Index {
-                dest: var.clone(),
+                dest: elem_tmp.clone(),
                 base: MirOperand::Local(iter_tmp),
                 index: MirOperand::Local(idx.clone()),
+            });
+            b.push(MirInstr::Assign {
+                dest: var.clone(),
+                value: MirOperand::Local(elem_tmp),
             });
             let cont_bb = b.new_block();
             b.loops.push(LoopFrame {
@@ -811,6 +817,7 @@ fn lower_expr(e: &HirExpr, b: &mut Builder) -> MirOperand {
     match e {
         HirExpr::Literal(v) => match v {
             crate::ast::Value::Int(n) => MirOperand::ConstInt(*n),
+            crate::ast::Value::Float(n) => MirOperand::ConstFloat(*n),
             crate::ast::Value::Bool(x) => MirOperand::ConstBool(*x),
             crate::ast::Value::Str(s) => MirOperand::ConstStr(s.clone()),
             crate::ast::Value::Unit => MirOperand::ConstUnit,

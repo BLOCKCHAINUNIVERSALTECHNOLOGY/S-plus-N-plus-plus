@@ -313,6 +313,7 @@ fn repl() {
 fn show(value: &crate::Value) -> String {
     match value {
         crate::Value::Int(value) => value.to_string(),
+        crate::Value::Float(value) => value.to_string(),
         crate::Value::Str(value) => value.clone(),
         crate::Value::Bool(value) => value.to_string(),
         crate::Value::Unit => "unit".into(),

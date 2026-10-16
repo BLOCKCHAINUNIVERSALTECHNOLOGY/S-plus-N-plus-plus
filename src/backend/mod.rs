@@ -340,6 +340,7 @@ fn operand_llvm(
 ) -> Result<String, String> {
     match op {
         MirOperand::ConstInt(n) => Ok(n.to_string()),
+        MirOperand::ConstFloat(n) => Ok(format!("{}", *n as i64)), // stub: truncate
         MirOperand::ConstBool(true) => Ok("1".into()),
         MirOperand::ConstBool(false) => Ok("0".into()),
         MirOperand::ConstUnit => Ok("0".into()),
@@ -623,6 +624,9 @@ fn emit_wasm_operand(out: &mut String, op: &MirOperand) -> Result<(), String> {
     match op {
         MirOperand::ConstInt(n) => {
             writeln!(out, "        (i64.const {n})").unwrap();
+        }
+        MirOperand::ConstFloat(n) => {
+            writeln!(out, "        (f64.const {n})").unwrap();
         }
         MirOperand::ConstBool(true) => {
             writeln!(out, "        (i64.const 1)").unwrap();

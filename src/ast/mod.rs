@@ -22,6 +22,7 @@ impl Span {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Int,
+    Float,
     Str,
     Bool,
     Unit,
@@ -52,6 +53,7 @@ impl Type {
         matches!(
             self,
             Type::Int
+                | Type::Float
                 | Type::Bool
                 | Type::Str
                 | Type::Unit
@@ -65,6 +67,7 @@ impl Type {
     pub fn name(&self) -> String {
         match self {
             Type::Int => "Int".into(),
+            Type::Float => "Float".into(),
             Type::Str => "String".into(),
             Type::Bool => "Bool".into(),
             Type::Unit => "Unit".into(),
@@ -98,6 +101,7 @@ impl fmt::Display for Type {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int(i64),
+    Float(f64),
     Str(String),
     Bool(bool),
     Var(String),
@@ -317,6 +321,7 @@ pub struct StructDef {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Int(i64),
+    Float(f64),
     Str(String),
     Bool(bool),
     Unit,
@@ -350,6 +355,7 @@ impl Value {
     pub fn type_of(&self) -> Type {
         match self {
             Value::Int(_) => Type::Int,
+            Value::Float(_) => Type::Float,
             Value::Str(_) => Type::Str,
             Value::Bool(_) => Type::Bool,
             Value::Unit => Type::Unit,
@@ -368,6 +374,7 @@ impl Value {
         match self {
             Value::Bool(b) => *b,
             Value::Int(n) => *n != 0,
+            Value::Float(n) => *n != 0.0,
             Value::Unit => false,
             _ => true,
         }
@@ -378,6 +385,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Int(x) => write!(f, "{x}"),
+            Value::Float(x) => write!(f, "{x}"),
             Value::Str(s) => write!(f, "{s}"),
             Value::Bool(b) => write!(f, "{b}"),
             Value::Unit => write!(f, "unit"),

@@ -257,6 +257,7 @@ fn lower_stmt(s: &Stmt) -> HirStmt {
 fn lower_expr(e: &Expr) -> HirExpr {
     match e {
         Expr::Int(v) => HirExpr::Literal(Value::Int(*v)),
+        Expr::Float(v) => HirExpr::Literal(Value::Float(*v)),
         Expr::Str(v) => HirExpr::Literal(Value::Str(v.clone())),
         Expr::Bool(v) => HirExpr::Literal(Value::Bool(*v)),
         Expr::Var(n) => HirExpr::Var(n.clone()),

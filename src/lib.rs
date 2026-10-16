@@ -21,7 +21,7 @@ pub mod sema;
 pub mod stdlib;
 pub mod vm;
 
-pub const VERSION: &str = "2.5.0";
+pub const VERSION: &str = "2.6.0";
 
 pub use ast::{Expr, Function, Program, Stmt, Type, Value};
 pub use lexer::{lex, Token};

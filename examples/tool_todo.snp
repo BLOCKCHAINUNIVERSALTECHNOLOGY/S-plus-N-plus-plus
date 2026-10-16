@@ -1,0 +1,36 @@
+// Real-ish tool: tiny TODO score + float weights
+// snp run examples/tool_todo.snp
+
+fn weight_for(priority: Int) -> Float {
+    if priority >= 3 {
+        return 1.5;
+    }
+    if priority >= 2 {
+        return 1.0;
+    }
+    return 0.5;
+}
+
+fn main() -> Int {
+    let titles = ["ship docs", "fix parse", "bench loop"];
+    let prios = [3, 2, 1];
+    let done = [1, 0, 1];
+
+    let score = 0.0;
+    for (i, title) in titles {
+        let p = list_get(prios, i);
+        let d = list_get(done, i);
+        let w = weight_for(p);
+        if d == 1 {
+            score = score + w;
+            print(str_join(["[x] ", title, " (+", float_to_str(w), ")"], ""));
+        } else {
+            print(str_join(["[ ] ", title], ""));
+        }
+    }
+
+    print(str_join(["score=", float_to_str(score)], ""));
+    let n = floor(score * 10.0);
+    assert(n == 20, "1.5+0.5=2.0 -> 20");
+    return n;
+}

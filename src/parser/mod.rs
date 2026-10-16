@@ -543,6 +543,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             }
             Token::Ident(name) => match name.as_str() {
                 "Int" => Type::Int,
+                "Float" => Type::Float,
                 "String" => Type::Str,
                 "Bool" => Type::Bool,
                 "Unit" => Type::Unit,
@@ -1324,6 +1325,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
     fn atom(&mut self) -> Result<Expr, String> {
         match self.bump() {
             Token::Int(v) => Ok(Expr::Int(v)),
+            Token::Float(v) => Ok(Expr::Float(v)),
             Token::Str(s) => Ok(self.maybe_interp(s)),
             Token::True => Ok(Expr::Bool(true)),
             Token::False => Ok(Expr::Bool(false)),

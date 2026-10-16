@@ -112,6 +112,7 @@ fn expr_type(
 ) -> Result<Type, String> {
     match x {
         Expr::Int(_) => Ok(Type::Int),
+        Expr::Float(_) => Ok(Type::Float),
         Expr::Str(_) => Ok(Type::Str),
         Expr::Bool(_) => Ok(Type::Bool),
         Expr::Var(n) => env
@@ -122,7 +123,7 @@ fn expr_type(
             let builtins = [
                 "print", "spawn", "join", "channel", "send", "receive",
                 "str_len", "str_contains", "str_upper", "str_lower", "str_trim", "str_concat",
-                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
+                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "str_parse_int", "str_parse_float", "int_to_str", "float_to_str", "floor", "ceil", "round", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
                 "map", "map_set", "map_get", "map_has", "map_len", "map_keys", "map_values", "map_remove",
                 "abs", "min", "max", "pow", "sqrt_approx",
                 "now_ms", "rand", "rand_range",
@@ -147,7 +148,9 @@ fn expr_type(
                     "list_contains" => Type::Bool,
                     "list_sum" | "list_min" | "list_max" | "str_index_of" | "tuple_len" => Type::Int,
                     "tuple_get" => Type::Unknown,
-                    "str_join" | "str_substring" | "str_trim" | "str_lower" | "str_upper" => Type::Str,
+                    "str_join" | "str_substring" | "str_trim" | "str_lower" | "str_upper" | "int_to_str" | "float_to_str" => Type::Str,
+                    "str_parse_int" | "floor" | "ceil" | "round" => Type::Int,
+                    "str_parse_float" => Type::Float,
                     "list_any" | "list_all" => Type::Bool,
                     "clone" => Type::Unknown,
                     "list_fold" => Type::Unknown,
@@ -546,26 +549,32 @@ fn expr_type(
             let right = expr_type(b, env, sigs, structs)?;
             match op {
                 Token::Plus => {
-                    if left == right && (left == Type::Int || left == Type::Str) {
-                        Ok(left)
+                    if left == Type::Str || right == Type::Str {
+                        Ok(Type::Str)
+                    } else if left == Type::Float || right == Type::Float {
+                        Ok(Type::Float)
+                    } else if left == Type::Int && right == Type::Int {
+                        Ok(Type::Int)
                     } else if left == Type::Unknown || right == Type::Unknown {
                         Ok(Type::Unknown)
                     } else {
                         Err(format!(
-                            "operator + expects two Int or two String, got {} and {}",
+                            "operator + expects Int/Float/String, got {} and {}",
                             type_name(&left),
                             type_name(&right)
                         ))
                     }
                 }
                 Token::Minus | Token::Star | Token::Slash | Token::Percent => {
-                    if (left == Type::Int || left == Type::Unknown)
+                    if left == Type::Float || right == Type::Float {
+                        Ok(Type::Float)
+                    } else if (left == Type::Int || left == Type::Unknown)
                         && (right == Type::Int || right == Type::Unknown)
                     {
                         Ok(Type::Int)
                     } else {
                         Err(format!(
-                            "arithmetic expects Int, got {} and {}",
+                            "arithmetic expects Int or Float, got {} and {}",
                             type_name(&left),
                             type_name(&right)
                         ))
@@ -586,13 +595,12 @@ fn expr_type(
                 }
                 Token::EqEq | Token::BangEq => Ok(Type::Bool),
                 Token::Lt | Token::Lte | Token::Gt | Token::Gte => {
-                    if (left == Type::Int || left == Type::Unknown)
-                        && (right == Type::Int || right == Type::Unknown)
-                    {
+                    let num = |t: &Type| matches!(t, Type::Int | Type::Float | Type::Unknown);
+                    if num(&left) && num(&right) {
                         Ok(Type::Bool)
                     } else {
                         Err(format!(
-                            "comparison expects Int, got {} and {}",
+                            "comparison expects Int or Float, got {} and {}",
                             type_name(&left),
                             type_name(&right)
                         ))
@@ -770,6 +778,7 @@ fn check_typed_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
             }
@@ -805,8 +814,9 @@ fn ownership_expr(
                 let ty = env.get(name).map(|t| t.name()).unwrap_or_else(|| "unknown".into());
                 return Err(format!(
                     "borrow error: use of moved value `{name}` (type {ty})
-                     	help: this value was moved earlier and cannot be used again
-                     	help: copyable types (Int, Bool, String) are fine; for structs/lists use a fresh binding"
+  help: `{name}` was moved by an earlier use (e.g. list_rev / pass-by-value)
+  help: use `clone({name})` if you need the value twice, or restructure so it is only used once
+  help: Int, Bool, String are copyable and do not move"
                 ));
             }
             if move_value && !copyable(env.get(name).unwrap_or(&Type::Unknown)) {
@@ -868,10 +878,10 @@ fn ownership_expr(
                         | "str_concat"
                         | "list"
                         | "list_push"
-                        | "list_len" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_rev" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
+                        | "list_len" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "list_get"
                         | "list_set"
-                        | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_rev" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
+                        | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "map"
                         | "map_set"
                         | "map_get"
@@ -908,10 +918,24 @@ fn ownership_expr(
                 }
             }
         }
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) => {}
-        Expr::MethodCall { receiver, args, .. } => {
-            // Method receiver: move non-copyable self into the call
-            ownership_expr(receiver, env, moved, moved_var(receiver).is_some(), sigs)?;
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::MethodCall {
+            receiver,
+            method,
+            args,
+        } => {
+            // Intrinsic list/str/map methods borrow receiver (like list_len).
+            // User struct methods move receiver (by-value self).
+            let recv_ty = env
+                .get(&moved_var(receiver).unwrap_or_default())
+                .cloned()
+                .unwrap_or(Type::Unknown);
+            let is_intrinsic = intrinsic_method_name(&recv_ty, method).is_some()
+                || intrinsic_method_name(&Type::List, method).is_some()
+                || intrinsic_method_name(&Type::Str, method).is_some()
+                || intrinsic_method_name(&Type::Map, method).is_some();
+            let move_recv = !is_intrinsic && moved_var(receiver).is_some();
+            ownership_expr(receiver, env, moved, move_recv, sigs)?;
             for a in args {
                 ownership_expr(a, env, moved, moved_var(a).is_some(), sigs)?;
             }
@@ -1038,6 +1062,7 @@ fn ownership_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
             }
@@ -1064,7 +1089,10 @@ fn definite_expr(
                 return Err(format!("undefined variable `{name}`"));
             }
             if !assigned.contains_key(name) {
-                return Err(format!("use of uninitialized variable `{name}`"));
+                return Err(format!(
+                    "use of uninitialized variable `{name}`
+  help: assign with `let {name} = ...` or `let {name}: T` then assign before use"
+                ));
             }
         }
         Expr::Binary(a, _, b) | Expr::Index(a, b) => {
@@ -1109,7 +1137,7 @@ fn definite_expr(
                 }
             }
         }
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         Expr::Lambda { .. } => {}
         Expr::MethodCall { receiver, args, .. } => {
             definite_expr(receiver, types, assigned)?;
@@ -1236,6 +1264,7 @@ fn definite_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
             }
@@ -1260,14 +1289,177 @@ pub fn check(fs: &[Function]) -> Result<(), String> {
 
 
 /// Rewrite `MethodCall` nodes into `Call("Type.method", [recv, ...args])`.
+
 pub fn desugar_match_expressions(program: &mut Program) {
-    let mut empty_env = HashMap::new();
-    let empty_sigs = HashMap::new();
-    let empty_structs = HashMap::new();
+    let mut helpers: Vec<crate::ast::Function> = Vec::new();
+    let mut id: u32 = 0;
     for f in &mut program.functions {
-        let _ = desugar_stmts(&mut f.body, &mut empty_env, &empty_sigs, &empty_structs);
+        desugar_match_expr_stmts(&mut f.body, &mut helpers, &mut id);
+    }
+    program.functions.extend(helpers);
+}
+
+fn desugar_match_expr_stmts(
+    stmts: &mut [Stmt],
+    helpers: &mut Vec<crate::ast::Function>,
+    id: &mut u32,
+) {
+    for s in stmts.iter_mut() {
+        match s {
+            Stmt::Let(_, e)
+            | Stmt::Const(_, e)
+            | Stmt::Assign(_, e)
+            | Stmt::Return(e)
+            | Stmt::Expr(e) => desugar_match_expr_node(e, helpers, id),
+            Stmt::FieldAssign { object, value, .. } => {
+                desugar_match_expr_node(object, helpers, id);
+                desugar_match_expr_node(value, helpers, id);
+            }
+            Stmt::If(c, a, b) => {
+                desugar_match_expr_node(c, helpers, id);
+                desugar_match_expr_stmts(a, helpers, id);
+                desugar_match_expr_stmts(b, helpers, id);
+            }
+            Stmt::While(c, body) => {
+                desugar_match_expr_node(c, helpers, id);
+                desugar_match_expr_stmts(body, helpers, id);
+            }
+            Stmt::For {
+                start, end, body, ..
+            } => {
+                desugar_match_expr_node(start, helpers, id);
+                desugar_match_expr_node(end, helpers, id);
+                desugar_match_expr_stmts(body, helpers, id);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                desugar_match_expr_node(iter, helpers, id);
+                desugar_match_expr_stmts(body, helpers, id);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                desugar_match_expr_node(scrutinee, helpers, id);
+                for arm in arms.iter_mut() {
+                    if let Some(g) = &mut arm.guard {
+                        desugar_match_expr_node(g, helpers, id);
+                    }
+                    desugar_match_expr_stmts(&mut arm.body, helpers, id);
+                }
+            }
+            Stmt::Defer(body) => desugar_match_expr_stmts(body, helpers, id),
+            Stmt::IfLet {
+                value, yes, no, ..
+            } => {
+                desugar_match_expr_node(value, helpers, id);
+                desugar_match_expr_stmts(yes, helpers, id);
+                desugar_match_expr_stmts(no, helpers, id);
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) => {}
+        }
     }
 }
+
+fn desugar_match_expr_node(
+    e: &mut Expr,
+    helpers: &mut Vec<crate::ast::Function>,
+    id: &mut u32,
+) {
+    match e {
+        Expr::MatchExpr { scrutinee, arms } => {
+            // Recurse into children first
+            desugar_match_expr_node(scrutinee, helpers, id);
+            for a in arms.iter_mut() {
+                if let Some(g) = &mut a.guard {
+                    desugar_match_expr_node(g, helpers, id);
+                }
+                desugar_match_expr_node(&mut a.value, helpers, id);
+            }
+            *id += 1;
+            let name = format!("__match_expr_{id}");
+            let mut stmt_arms = Vec::new();
+            for a in arms.iter() {
+                stmt_arms.push(crate::ast::MatchArm {
+                    pattern: a.pattern.clone(),
+                    guard: a.guard.clone(),
+                    body: vec![Stmt::Return(a.value.clone())],
+                });
+            }
+            let scr = scrutinee.as_ref().clone();
+            helpers.push(crate::ast::Function {
+                name: name.clone(),
+                visibility: crate::ast::Visibility::Private,
+                module_path: vec![],
+                params: vec!["__scr".into()],
+                param_types: vec![Type::Unknown],
+                return_type: Type::Unknown,
+                type_params: vec![],
+                trait_bounds: vec![],
+                body: vec![Stmt::Match {
+                    scrutinee: Expr::Var("__scr".into()),
+                    arms: stmt_arms,
+                }],
+            });
+            *e = Expr::Call(name, vec![scr]);
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            desugar_match_expr_node(a, helpers, id);
+            desugar_match_expr_node(b, helpers, id);
+        }
+        Expr::Unary(_, x)
+        | Expr::Try(x)
+        | Expr::Field(x, _) => desugar_match_expr_node(x, helpers, id),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            desugar_match_expr_node(cond, helpers, id);
+            desugar_match_expr_node(then_branch, helpers, id);
+            desugar_match_expr_node(else_branch, helpers, id);
+        }
+        Expr::Call(_, args) | Expr::Tuple(args) => {
+            for a in args {
+                desugar_match_expr_node(a, helpers, id);
+            }
+        }
+        Expr::CallExpr(callee, args) => {
+            desugar_match_expr_node(callee, helpers, id);
+            for a in args {
+                desugar_match_expr_node(a, helpers, id);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            desugar_match_expr_node(receiver, helpers, id);
+            for a in args {
+                desugar_match_expr_node(a, helpers, id);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, v) in fields {
+                desugar_match_expr_node(v, helpers, id);
+            }
+        }
+        Expr::VariantLit { args, .. } => {
+            for a in args {
+                desugar_match_expr_node(a, helpers, id);
+            }
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let crate::ast::InterpPart::Expr(x) = p {
+                    desugar_match_expr_node(x, helpers, id);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => desugar_match_expr_stmts(body, helpers, id),
+        Expr::Int(_) | Expr::Float(_)
+        | Expr::Float(_)
+        | Expr::Str(_)
+        | Expr::Bool(_)
+        | Expr::Var(_)
+        | Expr::Hole => {}
+    }
+}
+
 
 pub fn desugar_if_let(program: &mut Program) {
 
@@ -1458,15 +1650,31 @@ fn desugar_stmts(
                 desugar_stmts(body, env, sigs, structs)?;
             }
             Stmt::For {
-                start, end, body, ..
+                var,
+                start,
+                end,
+                body,
+                ..
             } => {
                 *start = desugar_expr(start, env, sigs, structs)?;
                 *end = desugar_expr(end, env, sigs, structs)?;
-                desugar_stmts(body, env, sigs, structs)?;
+                let mut loop_env = env.clone();
+                loop_env.insert(var.clone(), Type::Int);
+                desugar_stmts(body, &mut loop_env, sigs, structs)?;
             }
-            Stmt::ForIn { iter, body, .. } => {
+            Stmt::ForIn {
+                var,
+                index,
+                iter,
+                body,
+            } => {
                 *iter = desugar_expr(iter, env, sigs, structs)?;
-                desugar_stmts(body, env, sigs, structs)?;
+                let mut loop_env = env.clone();
+                loop_env.insert(var.clone(), Type::Unknown);
+                if let Some(i) = index {
+                    loop_env.insert(i.clone(), Type::Int);
+                }
+                desugar_stmts(body, &mut loop_env, sigs, structs)?;
             }
             Stmt::Match { scrutinee, arms } => {
                 *scrutinee = desugar_expr(scrutinee, env, sigs, structs)?;
@@ -1492,6 +1700,7 @@ fn desugar_stmts(
                 }
             }
             Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
             }
@@ -1566,32 +1775,8 @@ fn desugar_expr(
             then_branch: Box::new(desugar_expr(then_branch, env, sigs, structs)?),
             else_branch: Box::new(desugar_expr(else_branch, env, sigs, structs)?),
         }),
-        Expr::MatchExpr { scrutinee, arms } => {
-            // Desugar to (fn() { match ... { p => { return v; } } })()
-            let mut stmt_arms = Vec::new();
-            for a in arms {
-                let val = desugar_expr(&a.value, env, sigs, structs)?;
-                let guard = match &a.guard {
-                    Some(g) => Some(desugar_expr(g, env, sigs, structs)?),
-                    None => None,
-                };
-                stmt_arms.push(crate::ast::MatchArm {
-                    pattern: a.pattern.clone(),
-                    guard,
-                    body: vec![Stmt::Return(val)],
-                });
-            }
-            let scr = desugar_expr(scrutinee, env, sigs, structs)?;
-            let lambda = Expr::Lambda {
-                params: vec![],
-                param_types: vec![],
-                return_type: Type::Unknown,
-                body: vec![Stmt::Match {
-                    scrutinee: scr,
-                    arms: stmt_arms,
-                }],
-            };
-            Ok(Expr::CallExpr(Box::new(lambda), vec![]))
+        Expr::MatchExpr { .. } => {
+            Err("internal: MatchExpr should be desugared before desugar_expr".into())
         }
         Expr::Call(n, args) => {
             let mut na = Vec::new();
@@ -1935,7 +2120,8 @@ pub fn expand_uses(program: &mut Program) {
 fn rewrite_calls_stmts(stmts: &mut [Stmt], aliases: &HashMap<String, String>) {
     for s in stmts.iter_mut() {
         match s {
-            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+            Stmt::Let(_, e)
+            | Stmt::Const(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
                 rewrite_calls_expr(e, aliases);
             }
             Stmt::FieldAssign { object, value, .. } => {
@@ -2009,7 +2195,7 @@ fn rewrite_calls_expr(e: &mut Expr, aliases: &HashMap<String, String>) {
                 rewrite_calls_expr(&mut a.value, aliases);
             }
         }
-        Expr::Hole => {}
+        Expr::Hole | Expr::Float(_) => {}
         Expr::Tuple(items) => {
             for it in items {
                 rewrite_calls_expr(it, aliases);
@@ -2045,7 +2231,7 @@ fn rewrite_calls_expr(e: &mut Expr, aliases: &HashMap<String, String>) {
                 rewrite_calls_expr(x, aliases);
             }
         }
-        Expr::Int(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::Var(_) => {}
     }
 }
 

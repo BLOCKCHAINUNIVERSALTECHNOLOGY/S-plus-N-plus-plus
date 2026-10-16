@@ -6,7 +6,7 @@ pub enum Token {
     Fn, Let, If, Else, While, For, In, Return, Break, Continue,
     True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where, Const, Use, Defer, Loop,
     // Literals & identifiers
-    Ident(String), Int(i64), Str(String), Underscore,
+    Ident(String), Int(i64), Float(f64), Str(String), Underscore,
     // Operators
     Amp, AmpAmp, Plus, Minus, Star, Slash, Percent, Bang, Eq, EqEq, BangEq,
     PlusEq, MinusEq, StarEq, SlashEq, PercentEq, PipePipe,
@@ -40,18 +40,32 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
     while i < chars.len() {
         let c = chars[i];
         if c.is_whitespace() { i += 1; continue; }
-        if c == '#' {
+        if c == '#' || (c == '/' && i + 1 < chars.len() && chars[i + 1] == '/') {
             while i < chars.len() && chars[i] != '\n' { i += 1; }
             continue;
         }
         if c.is_ascii_digit() {
             let s = i;
             while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
-            let text: String = chars[s..i].iter().collect();
-            out.push(SpannedToken {
-                token: Token::Int(text.parse().map_err(|_| format!("invalid integer `{text}`"))?),
-                start: s, end: i,
-            });
+            let is_float = i < chars.len()
+                && chars[i] == '.'
+                && i + 1 < chars.len()
+                && chars[i + 1].is_ascii_digit();
+            if is_float {
+                i += 1; // dot
+                while i < chars.len() && chars[i].is_ascii_digit() { i += 1; }
+                let text: String = chars[s..i].iter().collect();
+                out.push(SpannedToken {
+                    token: Token::Float(text.parse().map_err(|_| format!("invalid float `{text}`"))?),
+                    start: s, end: i,
+                });
+            } else {
+                let text: String = chars[s..i].iter().collect();
+                out.push(SpannedToken {
+                    token: Token::Int(text.parse().map_err(|_| format!("invalid integer `{text}`"))?),
+                    start: s, end: i,
+                });
+            }
             continue;
         }
         if c.is_ascii_alphabetic() || c == '_' {
@@ -219,6 +233,16 @@ mod tests {
         assert!(tokens.contains(&Token::Struct));
         assert!(tokens.contains(&Token::Match));
         assert!(tokens.contains(&Token::DotDot));
+    }
+
+    #[test]
+    fn skips_line_comments() {
+        let tokens = lex("// hi
+let x = 1
+# bye
+").unwrap();
+        assert!(tokens.iter().any(|t| matches!(t, Token::Let)));
+        assert!(!tokens.iter().any(|t| matches!(t, Token::Ident(s) if s == "hi")));
     }
 
     #[test]

@@ -1,5 +1,57 @@
 # Changelog
 
+## [2.6.0] — 2026-10-15 — Float + parse + tool
+
+### Added
+- **`Float`** type / literals (`1.5`), arith + compare with Int promotion
+- **`str_parse_int`**, **`str_parse_float`**, **`int_to_str`**, **`float_to_str`**
+- **`floor`**, **`ceil`**, **`round`**
+- **`examples/tool_todo.snp`** — small weighted TODO score tool
+- **`examples/v26_float.snp`**
+
+### Notes
+- Parser errors already include line/column
+- Struct methods continue via `impl` / `Type.method` desugar
+
+# Changelog
+
+## [2.5.3] — 2026-10-15 — harden: let + loop vars
+
+### Fixed
+- **`let x = ...` inside `for` / `for (i, x) in`**: desugar_methods now puts loop
+  variables into the env before desugaring the body (expr_type can see them)
+- Unblocks `let row = score_line(list_get(names, idx), val)` in loops
+
+# Changelog
+
+## [2.5.2] — 2026-10-15 — harden: diagnostics + ship-proof
+
+### Improved
+- Borrow errors mention **`clone(name)`** and why the move happened
+- Uninitialized-variable errors include a short **help** line
+- Runtime `undefined variable` includes **function name** from call stack when available
+
+### Ship-proof example
+- `examples/ship_scoreboard.snp` — indexed for, match, if-expr, pipeline, assert (pure S+N++)
+
+# Changelog
+
+## [2.5.1] — 2026-10-15 — **core harden** (not a feature parade)
+
+### Fixed (real bugs)
+- **Match-expression bindings**: `match o { Option.Some(n) => n + 1, ... }` now works
+  (desugar via real helper function, not broken IIFE/lambda)
+- **Ownership**: `list_rev` **moves** the list — reuse after rev is a hard error
+- **Method sugar ownership**: `xs.len()` / `.get` / `.take` **borrow**, do not falsely move `xs`
+
+### Tests
+- `harden_match_expr_binding`, `harden_move_list_rejected`, `harden_copyable_int_ok`
+- `stmt_match_option_binding`
+
+This release prioritizes **correctness** over version theater.
+
+# Changelog
+
 ## [2.5.0] — 2026-10-15
 
 ### Added — method sugar
