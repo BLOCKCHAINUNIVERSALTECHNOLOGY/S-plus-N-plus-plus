@@ -1,0 +1,12 @@
+// 2.22 — Result + ? try operator
+fn double_pos(n: Int) -> Result {
+    if n <= 0 {
+        return Result.Err("need positive");
+    }
+    return Result.Ok(n * 2);
+}
+
+fn main() -> Int {
+    let x = double_pos(21)?;
+    return x;
+}

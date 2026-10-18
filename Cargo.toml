@@ -1,6 +1,6 @@
 [package]
 name = "splusnpp"
-version = "2.13.0"
+version = "2.24.0"
 edition = "2021"
 description = "S+N++ — a readable, statically-oriented systems language with safe ownership and practical concurrency"
 license = "MIT"

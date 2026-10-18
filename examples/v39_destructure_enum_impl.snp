@@ -1,0 +1,27 @@
+// 2.19 — struct destructure + enum impl
+struct Player {
+    hp: Int,
+    atk: Int
+}
+
+enum BoxOpt[T] {
+    Empty,
+    Full(T)
+}
+
+impl BoxOpt[T] {
+    fn unwrap_or(self, d: T) -> T {
+        match self {
+            BoxOpt.Full(x) => { return x; }
+            BoxOpt.Empty => { return d; }
+            _ => { return d; }
+        }
+    }
+}
+
+fn main() -> Int {
+    let p = Player { hp: 30, atk: 5 };
+    let Player { hp, atk: a } = p;
+    let o = BoxOpt.Full(7);
+    return hp + a + BoxOpt.unwrap_or(o, 0);
+}

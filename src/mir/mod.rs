@@ -153,6 +153,7 @@ pub fn lower(module: &HirModule) -> Result<MirModule, String> {
 }
 
 struct LoopFrame {
+    label: Option<String>,
     continue_bb: usize,
     break_bb: usize,
 }
@@ -303,7 +304,7 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
 
             b.switch(join_bb);
         }
-        HirStmt::While { cond, body } => {
+        HirStmt::While { label, cond, body } => {
             let header = b.new_block();
             let body_bb = b.new_block();
             let exit = b.new_block();
@@ -319,6 +320,7 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
 
             b.switch(body_bb);
             b.loops.push(LoopFrame {
+                label: label.clone(),
                 continue_bb: header,
                 break_bb: exit,
             });
@@ -374,6 +376,7 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
             // continue should jump to increment — use a continue block
             let cont_bb = b.new_block();
             b.loops.push(LoopFrame {
+                label: None,
                 continue_bb: cont_bb,
                 break_bb: exit,
             });
@@ -455,6 +458,7 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
             });
             let cont_bb = b.new_block();
             b.loops.push(LoopFrame {
+                label: None,
                 continue_bb: cont_bb,
                 break_bb: exit,
             });
@@ -506,6 +510,28 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
                             value: MirOperand::Local(scr_tmp.clone()),
                         });
                         b.set_term(MirTerminator::Jump(arm_bb));
+                    }
+                    crate::ast::Pattern::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } => {
+                        let cmp = b.fresh("mrange");
+                        b.push(MirInstr::Call {
+                            dest: cmp.clone(),
+                            name: "__in_range".into(),
+                            args: vec![
+                                MirOperand::Local(scr_tmp.clone()),
+                                MirOperand::ConstInt(*start),
+                                MirOperand::ConstInt(*end),
+                                MirOperand::ConstInt(if *inclusive { 1 } else { 0 }),
+                            ],
+                        });
+                        b.set_term(MirTerminator::Branch {
+                            cond: MirOperand::Local(cmp),
+                            then_bb: arm_bb,
+                            else_bb: next_bb,
+                        });
                     }
                     crate::ast::Pattern::Int(v) => {
                         let cmp = b.fresh("mcmp");
@@ -649,22 +675,34 @@ fn lower_stmt(s: &HirStmt, b: &mut Builder) {
             }
             b.switch(join);
         }
-        HirStmt::Break => {
-            if let Some(frame) = b.loops.last() {
+        HirStmt::Break(label) => {
+            let frame = match label {
+                Some(name) => b.loops.iter().rev().find(|f| f.label.as_ref() == Some(name)),
+                None => b.loops.last(),
+            };
+            if let Some(frame) = frame {
                 let target = frame.break_bb;
                 b.set_term(MirTerminator::Jump(target));
                 let dead = b.new_block();
                 b.switch(dead);
+            } else if label.is_some() {
+                b.error = Some(format!("break label `{}` not found", label.as_ref().unwrap()));
             } else {
                 b.error = Some("break outside of loop".into());
             }
         }
-        HirStmt::Continue => {
-            if let Some(frame) = b.loops.last() {
+        HirStmt::Continue(label) => {
+            let frame = match label {
+                Some(name) => b.loops.iter().rev().find(|f| f.label.as_ref() == Some(name)),
+                None => b.loops.last(),
+            };
+            if let Some(frame) = frame {
                 let target = frame.continue_bb;
                 b.set_term(MirTerminator::Jump(target));
                 let dead = b.new_block();
                 b.switch(dead);
+            } else if label.is_some() {
+                b.error = Some(format!("continue label `{}` not found", label.as_ref().unwrap()));
             } else {
                 b.error = Some("continue outside of loop".into());
             }
@@ -765,7 +803,7 @@ fn hir_free_vars_stmts(xs: &[HirStmt], bound: &std::collections::HashSet<String>
                 hir_free_vars_stmts(then_body, &bound, out);
                 hir_free_vars_stmts(else_body, &bound, out);
             }
-            HirStmt::While { cond, body } => {
+            HirStmt::While { cond, body, .. } => {
                 hir_free_vars_expr(cond, &bound, out);
                 hir_free_vars_stmts(body, &bound, out);
             }
@@ -808,7 +846,7 @@ fn hir_free_vars_stmts(xs: &[HirStmt], bound: &std::collections::HashSet<String>
                     hir_free_vars_stmts(body, &b2, out);
                 }
             }
-            HirStmt::Break | HirStmt::Continue => {}
+            HirStmt::Break(_) | HirStmt::Continue(_) => {}
         }
     }
 }

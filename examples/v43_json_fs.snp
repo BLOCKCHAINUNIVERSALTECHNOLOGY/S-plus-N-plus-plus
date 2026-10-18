@@ -1,0 +1,16 @@
+// 2.23 — JSON objects + file lines
+fn main() -> Int {
+    let m = map();
+    let m = map_set(m, "score", 40);
+    let m = map_set(m, "bonus", 2);
+    let raw = json_stringify(m);
+    let j = json_parse(raw);
+    let s = json_get(j, "score");
+    let b = json_get(j, "bonus");
+    let path = "/tmp/snp_example_43.txt";
+    fs_write_text(path, "x");
+    fs_append_text(path, "\ny");
+    let lines = fs_read_lines(path);
+    fs_remove(path);
+    return s + b + list_len(lines);
+}

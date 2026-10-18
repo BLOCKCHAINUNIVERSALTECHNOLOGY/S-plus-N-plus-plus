@@ -1,0 +1,18 @@
+// 2.21 — loop + labeled break
+fn main() -> Int {
+    let total = 0;
+    outer: loop {
+        let i = 0;
+        loop {
+            i = i + 1;
+            total = total + 1;
+            if i >= 3 {
+                break;
+            }
+        }
+        if total >= 9 {
+            break outer;
+        }
+    }
+    return total;
+}

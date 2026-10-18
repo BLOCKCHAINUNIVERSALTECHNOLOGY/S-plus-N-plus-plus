@@ -67,6 +67,7 @@ pub fn load_entry(entry: &Path) -> Result<(Program, Vec<LoadedUnit>), String> {
             externs: all_externs,
             consts: vec![],
             uses: vec![],
+            type_aliases: vec![],
         },
         units,
     ))
@@ -180,6 +181,7 @@ fn load_recursive(
             externs: vec![],
             consts: vec![],
             uses: vec![],
+            type_aliases: vec![],
         },
     });
 
@@ -217,7 +219,12 @@ pub fn execute_path(entry: &Path) -> Result<crate::ast::Value, String> {
     crate::sema::desugar_if_let(&mut program);
     crate::sema::desugar_defer(&mut program);
     crate::sema::expand_trait_defaults(&mut program)?;
+    crate::sema::expand_type_aliases(&mut program);
+    crate::sema::desugar_tuple_lets(&mut program);
+    crate::sema::desugar_struct_defaults(&mut program);
+    crate::sema::desugar_struct_defaults(&mut program);
     crate::sema::check_program(&program)?;
+    crate::sema::desugar_enum_variant_calls(&mut program);
     crate::sema::monomorphize(&mut program)?;
     execute_program(&program)
 }

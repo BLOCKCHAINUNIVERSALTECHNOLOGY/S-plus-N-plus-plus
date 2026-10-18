@@ -1,9 +1,9 @@
-# File map — S+N++ 2.13.0
+# File map — S+N++ 2.24.0
 
 ## Root
-- `Cargo.toml` — package version **2.13.0**, binary `snp`
+- `Cargo.toml` — package version **2.24.0**, binary `snp`
 - `src/main.rs` — entry → `cli::run`
-- `src/lib.rs` — modules + `VERSION = "2.13.0"`
+- `src/lib.rs` — modules + `VERSION = "2.24.0"`
 
 ## Compiler pipeline (`src/`)
 | Module | Role |
@@ -60,3 +60,5 @@
 2. Copy contents into repo root (or replace tree)
 3. `cargo test` then `cargo build --release`
 4. `./target/release/snp run examples/v33_struct_mono.snp`
+
+- `docs/PHASE_A.md` — production Phase A (sandbox, SNPBC2)

@@ -10,8 +10,22 @@ pub fn run() {
         println!("snp {}", crate::VERSION);
         return;
     }
+    // Phase A sandbox: SNP_SANDBOX=1 or --sandbox disables FS (and keeps net denied)
+    let sandbox_flag = args.iter().any(|a| a == "--sandbox")
+        || env::var("SNP_SANDBOX").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    if sandbox_flag {
+        crate::vm::set_sandbox(crate::vm::Sandbox {
+            allow_fs: false,
+            allow_net: false,
+        });
+    } else if env::var("SNP_ALLOW_FS").map(|v| v == "0").unwrap_or(false) {
+        crate::vm::set_sandbox(crate::vm::Sandbox {
+            allow_fs: false,
+            allow_net: false,
+        });
+    }
     if args.len() < 2 {
-        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp lsp | snp registry-serve [dir] [port] | snp registry-publish <pkg-dir> [registry-root] | snp emit-native <file.snp> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
+        eprintln!("S+N++ — usage: snp init <dir> [name] | snp package-check [snp.toml] | snp lock [snp.toml] | snp run [--sandbox] <file.snp> | snp check <file.snp> | snp build <file.snp> | snp test [dir|file] | snp bench [file.snp] [iters] | snp version | snp fmt <file> | snp doc <file> | snp lsp | snp registry-serve [dir] [port] | snp registry-publish <pkg-dir> [registry-root] | snp emit-native <file.snp> | snp fetch <pkg> [constraint] | snp emit-llvm <file.snp> | snp emit-wasm <file.snp> | snp repl");
         return;
     }
     if args[1] == "repl" {

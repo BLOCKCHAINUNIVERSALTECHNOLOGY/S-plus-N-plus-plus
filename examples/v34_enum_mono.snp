@@ -1,0 +1,14 @@
+// 2.14 — generic enum monomorphization
+enum Option2[T] {
+    None,
+    Some(T)
+}
+
+fn main() -> Int {
+    let a = Option2.Some(40);
+    match a {
+        Option2.Some(n) => { return n + 2; }
+        Option2.None => { return 0; }
+        _ => { return -1; }
+    }
+}

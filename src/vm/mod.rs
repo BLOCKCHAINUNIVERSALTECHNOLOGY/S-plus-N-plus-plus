@@ -41,6 +41,64 @@ pub fn reset_runtime_limits() {
     CALL_DEPTH.with(|c| c.set(0));
 }
 
+/// Production Phase A: capability sandbox for host-side effects.
+#[derive(Debug, Clone, Copy)]
+pub struct Sandbox {
+    pub allow_fs: bool,
+    pub allow_net: bool,
+}
+
+impl Default for Sandbox {
+    fn default() -> Self {
+        // Default: FS allowed for local scripts; net denied
+        Self {
+            allow_fs: true,
+            allow_net: false,
+        }
+    }
+}
+
+thread_local! {
+    static SANDBOX: std::cell::Cell<Sandbox> = std::cell::Cell::new(Sandbox {
+        allow_fs: true,
+        allow_net: false,
+    });
+}
+
+pub fn set_sandbox(s: Sandbox) {
+    SANDBOX.with(|c| c.set(s));
+}
+
+pub fn sandbox() -> Sandbox {
+    SANDBOX.with(|c| c.get())
+}
+
+pub fn reset_sandbox() {
+    set_sandbox(Sandbox::default());
+}
+
+fn require_fs(op: &str) -> Result<(), String> {
+    if sandbox().allow_fs {
+        Ok(())
+    } else {
+        Err(format!(
+            "sandbox: `{op}` blocked (filesystem disabled)
+  help: enable FS for trusted scripts only; embedders use set_sandbox(Sandbox {{ allow_fs: true, .. }})"
+        ))
+    }
+}
+
+fn require_net(op: &str) -> Result<(), String> {
+    if sandbox().allow_net {
+        Ok(())
+    } else {
+        Err(format!(
+            "sandbox: `{op}` blocked (network disabled)
+  help: set allow_net only for trusted hosts"
+        ))
+    }
+}
+
 struct ScopeGuard(usize);
 impl Drop for ScopeGuard {
     fn drop(&mut self) {
@@ -87,6 +145,7 @@ pub struct Chunk {
 
 #[allow(dead_code)]
 struct LoopCtx {
+    label: Option<String>,
     continue_target: usize,
     breaks: Vec<usize>,
     continues: Vec<usize>,
@@ -157,6 +216,13 @@ fn json_parse_value(s: &str) -> Result<Value, String> {
         let inner = &s[1..s.len() - 1];
         return Ok(Value::Str(inner.replace("\\\"", "\"").replace("\\\\", "\\")));
     }
+    if let Ok(n) = s.parse::<f64>() {
+        if !s.contains('.') && !s.contains('e') && !s.contains('E') {
+            // already tried i64 above
+        } else {
+            return Ok(Value::Float(n));
+        }
+    }
     if s.starts_with('[') && s.ends_with(']') {
         let inner = s[1..s.len() - 1].trim();
         if inner.is_empty() {
@@ -168,7 +234,50 @@ fn json_parse_value(s: &str) -> Result<Value, String> {
         }
         return Ok(Value::List(Arc::new(items)));
     }
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return Ok(Value::Map(Arc::new(BTreeMap::new())));
+        }
+        let mut map = BTreeMap::new();
+        for part in split_json_top(inner) {
+            let part = part.trim();
+            // "key": value
+            if let Some(colon) = find_json_colon(part) {
+                let key_raw = part[..colon].trim();
+                let val_raw = part[colon + 1..].trim();
+                let key = match json_parse_value(key_raw)? {
+                    Value::Str(k) => k,
+                    other => return Err(format!("json object key must be string, got {other}")),
+                };
+                map.insert(key, json_parse_value(val_raw)?);
+            } else {
+                return Err(format!("json_parse: bad object field: {part}"));
+            }
+        }
+        return Ok(Value::Map(Arc::new(map)));
+    }
     Err(format!("json_parse: unsupported or invalid JSON: {s}"))
+}
+
+fn find_json_colon(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let chars: Vec<char> = s.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        if *c == '"' && (i == 0 || chars[i - 1] != '\\') {
+            in_str = !in_str;
+        } else if !in_str {
+            if *c == '[' || *c == '{' {
+                depth += 1;
+            } else if *c == ']' || *c == '}' {
+                depth -= 1;
+            } else if *c == ':' && depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
 }
 
 fn split_json_top(s: &str) -> Vec<String> {
@@ -446,7 +555,7 @@ fn free_vars_stmts(xs: &[Stmt], bound: &HashSet<String>, out: &mut HashSet<Strin
                     free_vars_stmts(body, &b2, out);
                 }
             }
-            Stmt::Break | Stmt::Continue | Stmt::Defer(_) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Defer(_) | Stmt::Labeled(_, _) => {}
         }
     }
 }
@@ -632,19 +741,20 @@ fn compile_expr(x: &Expr, c: &mut Chunk) -> Result<(), String> {
 
 #[allow(dead_code)]
 fn compile_stmts(xs: &[Stmt], c: &mut Chunk) -> Result<(), String> {
-    compile_stmts_loop(xs, c, None)
+    let mut stack = Vec::new();
+    compile_stmts_loop(xs, c, &mut stack)
 }
 
 #[allow(dead_code)]
 fn compile_stmts_loop(
     xs: &[Stmt],
     c: &mut Chunk,
-    mut loop_ctx: Option<&mut LoopCtx>,
+    loops: &mut Vec<LoopCtx>,
 ) -> Result<(), String> {
     for s in xs {
         match s {
             Stmt::Defer(body) => {
-                compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                compile_stmts_loop(body, c, loops)?;
             }
             Stmt::IfLet { .. } => {
                 return Err("if let should be desugared before compile".into());
@@ -677,30 +787,31 @@ fn compile_stmts_loop(
                 compile_expr(cond, c)?;
                 let jf = c.code.len();
                 c.code.push(Op::JumpIfFalse(0));
-                compile_stmts_loop(a, c, loop_ctx.as_deref_mut())?;
+                compile_stmts_loop(a, c, loops)?;
                 let j = c.code.len();
                 c.code.push(Op::Jump(0));
                 let else_ip = c.code.len();
-                compile_stmts_loop(b, c, loop_ctx.as_deref_mut())?;
+                compile_stmts_loop(b, c, loops)?;
                 let end = c.code.len();
                 c.code[jf] = Op::JumpIfFalse(else_ip);
                 c.code[j] = Op::Jump(end);
             }
             Stmt::While(cond, body) => {
-                let mut ctx = LoopCtx {
-                    continue_target: 0,
+                let start = c.code.len();
+                loops.push(LoopCtx {
+                    label: None,
+                    continue_target: start,
                     breaks: Vec::new(),
                     continues: Vec::new(),
-                };
-                let start = c.code.len();
-                ctx.continue_target = start;
+                });
                 compile_expr(cond, c)?;
                 let jf = c.code.len();
                 c.code.push(Op::JumpIfFalse(0));
-                compile_stmts_loop(body, c, Some(&mut ctx))?;
+                compile_stmts_loop(body, c, loops)?;
                 c.code.push(Op::Jump(start));
                 let end = c.code.len();
                 c.code[jf] = Op::JumpIfFalse(end);
+                let ctx = loops.pop().unwrap();
                 for bi in ctx.breaks {
                     c.code[bi] = Op::Jump(end);
                 }
@@ -708,16 +819,48 @@ fn compile_stmts_loop(
                     c.code[ci] = Op::Jump(start);
                 }
             }
+            Stmt::Labeled(label, inner) => {
+                match inner.as_ref() {
+                    Stmt::While(cond, body) => {
+                        let start = c.code.len();
+                        loops.push(LoopCtx {
+                            label: Some(label.clone()),
+                            continue_target: start,
+                            breaks: Vec::new(),
+                            continues: Vec::new(),
+                        });
+                        compile_expr(cond, c)?;
+                        let jf = c.code.len();
+                        c.code.push(Op::JumpIfFalse(0));
+                        compile_stmts_loop(body, c, loops)?;
+                        c.code.push(Op::Jump(start));
+                        let end = c.code.len();
+                        c.code[jf] = Op::JumpIfFalse(end);
+                        let ctx = loops.pop().unwrap();
+                        for bi in ctx.breaks {
+                            c.code[bi] = Op::Jump(end);
+                        }
+                        for ci in ctx.continues {
+                            c.code[ci] = Op::Jump(start);
+                        }
+                    }
+                    other => {
+                        // Label only meaningful on loops — compile inner with label on next loop push
+                        compile_stmts_loop(std::slice::from_ref(other), c, loops)?;
+                    }
+                }
+            }
             Stmt::For { var, start, end, inclusive, body } => {
                 let tmp = format!("__for_{}", var);
                 compile_expr(start, c)?;
                 c.code.push(Op::Store(tmp.clone()));
-                let mut ctx = LoopCtx {
-                    continue_target: 0,
+                let loop_start = c.code.len();
+                loops.push(LoopCtx {
+                    label: None,
+                    continue_target: loop_start,
                     breaks: Vec::new(),
                     continues: Vec::new(),
-                };
-                let loop_start = c.code.len();
+                });
                 c.code.push(Op::Load(tmp.clone()));
                 compile_expr(end, c)?;
                 c.code.push(Op::Lt);
@@ -725,9 +868,11 @@ fn compile_stmts_loop(
                 c.code.push(Op::JumpIfFalse(0));
                 c.code.push(Op::Load(tmp.clone()));
                 c.code.push(Op::Store(var.clone()));
-                compile_stmts_loop(body, c, Some(&mut ctx))?;
+                compile_stmts_loop(body, c, loops)?;
                 let incr_ip = c.code.len();
-                ctx.continue_target = incr_ip;
+                if let Some(ctx) = loops.last_mut() {
+                    ctx.continue_target = incr_ip;
+                }
                 c.code.push(Op::Load(tmp.clone()));
                 c.code.push(Op::Const(Value::Int(1)));
                 c.code.push(Op::Add);
@@ -735,6 +880,7 @@ fn compile_stmts_loop(
                 c.code.push(Op::Jump(loop_start));
                 let loop_end = c.code.len();
                 c.code[jf] = Op::JumpIfFalse(loop_end);
+                let ctx = loops.pop().unwrap();
                 for bi in ctx.breaks {
                     c.code[bi] = Op::Jump(loop_end);
                 }
@@ -754,12 +900,13 @@ fn compile_stmts_loop(
                 c.code.push(Op::Store(len_tmp.clone()));
                 c.code.push(Op::Const(Value::Int(0)));
                 c.code.push(Op::Store(idx_tmp.clone()));
-                let mut ctx = LoopCtx {
-                    continue_target: 0,
+                let loop_start = c.code.len();
+                loops.push(LoopCtx {
+                    label: None,
+                    continue_target: loop_start,
                     breaks: Vec::new(),
                     continues: Vec::new(),
-                };
-                let loop_start = c.code.len();
+                });
                 c.code.push(Op::Load(idx_tmp.clone()));
                 c.code.push(Op::Load(len_tmp.clone()));
                 c.code.push(Op::Lt);
@@ -773,8 +920,11 @@ fn compile_stmts_loop(
                     c.code.push(Op::Load(idx_tmp.clone()));
                     c.code.push(Op::Store(idx_name.clone()));
                 }
-                compile_stmts_loop(body, c, Some(&mut ctx))?;
+                compile_stmts_loop(body, c, loops)?;
                 let incr_ip = c.code.len();
+                if let Some(ctx) = loops.last_mut() {
+                    ctx.continue_target = incr_ip;
+                }
                 c.code.push(Op::Load(idx_tmp.clone()));
                 c.code.push(Op::Const(Value::Int(1)));
                 c.code.push(Op::Add);
@@ -782,6 +932,7 @@ fn compile_stmts_loop(
                 c.code.push(Op::Jump(loop_start));
                 let loop_end = c.code.len();
                 c.code[jf] = Op::JumpIfFalse(loop_end);
+                let ctx = loops.pop().unwrap();
                 for bi in ctx.breaks {
                     c.code[bi] = Op::Jump(loop_end);
                 }
@@ -803,7 +954,7 @@ fn compile_stmts_loop(
                         Pattern::Tuple(_) => {
                             // simplified: treat like wildcard for AST compile path
                             c.code.push(Op::Pop);
-                            compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                            compile_stmts_loop(body, c, loops)?;
                             let j = c.code.len();
                             c.code.push(Op::Jump(0));
                             end_jumps.push(j);
@@ -815,7 +966,7 @@ fn compile_stmts_loop(
                                 compile_expr(g, c)?;
                                 let jf = c.code.len();
                                 c.code.push(Op::JumpIfFalse(0));
-                                compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                                compile_stmts_loop(body, c, loops)?;
                                 let j = c.code.len();
                                 c.code.push(Op::Jump(0));
                                 end_jumps.push(j);
@@ -823,7 +974,7 @@ fn compile_stmts_loop(
                                 c.code[jf] = Op::JumpIfFalse(next);
                                 continue;
                             }
-                            compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                            compile_stmts_loop(body, c, loops)?;
                             let j = c.code.len();
                             c.code.push(Op::Jump(0));
                             end_jumps.push(j);
@@ -832,6 +983,16 @@ fn compile_stmts_loop(
                         Pattern::Int(v) => {
                             c.code.push(Op::Const(Value::Int(*v)));
                             c.code.push(Op::Eq);
+                        }
+                        Pattern::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => {
+                            c.code.push(Op::Const(Value::Int(*start)));
+                            c.code.push(Op::Const(Value::Int(*end)));
+                            c.code.push(Op::Const(Value::Int(if *inclusive { 1 } else { 0 })));
+                            c.code.push(Op::Call("__in_range".into(), 4));
                         }
                         Pattern::Bool(v) => {
                             c.code.push(Op::Const(Value::Bool(*v)));
@@ -847,7 +1008,7 @@ fn compile_stmts_loop(
                                 compile_expr(g, c)?;
                                 let jf = c.code.len();
                                 c.code.push(Op::JumpIfFalse(0));
-                                compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                                compile_stmts_loop(body, c, loops)?;
                                 let j = c.code.len();
                                 c.code.push(Op::Jump(0));
                                 end_jumps.push(j);
@@ -855,7 +1016,7 @@ fn compile_stmts_loop(
                                 c.code[jf] = Op::JumpIfFalse(next);
                                 continue;
                             }
-                            compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                            compile_stmts_loop(body, c, loops)?;
                             let j = c.code.len();
                             c.code.push(Op::Jump(0));
                             end_jumps.push(j);
@@ -876,7 +1037,7 @@ fn compile_stmts_loop(
                                 compile_expr(g, c)?;
                                 let jg = c.code.len();
                                 c.code.push(Op::JumpIfFalse(0));
-                                compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                                compile_stmts_loop(body, c, loops)?;
                                 let j = c.code.len();
                                 c.code.push(Op::Jump(0));
                                 end_jumps.push(j);
@@ -885,7 +1046,7 @@ fn compile_stmts_loop(
                                 c.code[jg] = Op::JumpIfFalse(next);
                                 continue;
                             }
-                            compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                            compile_stmts_loop(body, c, loops)?;
                             let j = c.code.len();
                             c.code.push(Op::Jump(0));
                             end_jumps.push(j);
@@ -912,7 +1073,7 @@ fn compile_stmts_loop(
                                 compile_expr(g, c)?;
                                 let jg = c.code.len();
                                 c.code.push(Op::JumpIfFalse(0));
-                                compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                                compile_stmts_loop(body, c, loops)?;
                                 let j = c.code.len();
                                 c.code.push(Op::Jump(0));
                                 end_jumps.push(j);
@@ -921,7 +1082,7 @@ fn compile_stmts_loop(
                                 c.code[jg] = Op::JumpIfFalse(next);
                                 continue;
                             }
-                            compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                            compile_stmts_loop(body, c, loops)?;
                             let j = c.code.len();
                             c.code.push(Op::Jump(0));
                             end_jumps.push(j);
@@ -936,7 +1097,7 @@ fn compile_stmts_loop(
                         compile_expr(g, c)?;
                         let jg = c.code.len();
                         c.code.push(Op::JumpIfFalse(0));
-                        compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                        compile_stmts_loop(body, c, loops)?;
                         let j = c.code.len();
                         c.code.push(Op::Jump(0));
                         end_jumps.push(j);
@@ -944,7 +1105,7 @@ fn compile_stmts_loop(
                         c.code[jf] = Op::JumpIfFalse(next);
                         c.code[jg] = Op::JumpIfFalse(next);
                     } else {
-                        compile_stmts_loop(body, c, loop_ctx.as_deref_mut())?;
+                        compile_stmts_loop(body, c, loops)?;
                         let j = c.code.len();
                         c.code.push(Op::Jump(0));
                         end_jumps.push(j);
@@ -957,20 +1118,44 @@ fn compile_stmts_loop(
                     c.code[j] = Op::Jump(end);
                 }
             }
-            Stmt::Break => {
-                if let Some(ctx) = loop_ctx.as_deref_mut() {
-                    let idx = c.code.len();
+            Stmt::Break(label) => {
+                let idx = match label {
+                    Some(name) => loops.iter().rposition(|c| c.label.as_ref() == Some(name)),
+                    None => {
+                        if loops.is_empty() {
+                            None
+                        } else {
+                            Some(loops.len() - 1)
+                        }
+                    }
+                };
+                if let Some(i) = idx {
+                    let j = c.code.len();
                     c.code.push(Op::Jump(0));
-                    ctx.breaks.push(idx);
+                    loops[i].breaks.push(j);
+                } else if label.is_some() {
+                    return Err(format!("`break` label `{}` not found", label.as_ref().unwrap()));
                 } else {
                     return Err("`break` outside of a loop".into());
                 }
             }
-            Stmt::Continue => {
-                if let Some(ctx) = loop_ctx.as_deref_mut() {
-                    let idx = c.code.len();
+            Stmt::Continue(label) => {
+                let idx = match label {
+                    Some(name) => loops.iter().rposition(|c| c.label.as_ref() == Some(name)),
+                    None => {
+                        if loops.is_empty() {
+                            None
+                        } else {
+                            Some(loops.len() - 1)
+                        }
+                    }
+                };
+                if let Some(i) = idx {
+                    let j = c.code.len();
                     c.code.push(Op::Jump(0));
-                    ctx.continues.push(idx);
+                    loops[i].continues.push(j);
+                } else if label.is_some() {
+                    return Err(format!("`continue` label `{}` not found", label.as_ref().unwrap()));
                 } else {
                     return Err("`continue` outside of a loop".into());
                 }
@@ -1098,6 +1283,23 @@ impl BytecodeVm {
                     fields,
                 });
             }
+            "__in_range" => {
+                if let (
+                    Some(Value::Int(v)),
+                    Some(Value::Int(start)),
+                    Some(Value::Int(end)),
+                    Some(Value::Int(incl)),
+                ) = (args.get(0), args.get(1), args.get(2), args.get(3))
+                {
+                    let ok = if *incl != 0 {
+                        *v >= *start && *v <= *end
+                    } else {
+                        *v >= *start && *v < *end
+                    };
+                    return Ok(Value::Bool(ok));
+                }
+                return Err("__in_range expects Int value, start, end, inclusive".into());
+            }
             "__struct_is" => {
                 if let (Some(Value::Struct { name, .. }), Some(Value::Str(want))) =
                     (args.get(0), args.get(1))
@@ -1192,6 +1394,27 @@ impl BytecodeVm {
                 }
                 return Err("list_pop expects List".into());
             }
+            "list_first" => {
+                if let Some(Value::List(items)) = args.get(0) {
+                    return Ok(items.first().cloned().unwrap_or(Value::Unit));
+                }
+                return Err("list_first expects List".into());
+            }
+            "list_last" => {
+                if let Some(Value::List(items)) = args.get(0) {
+                    return Ok(items.last().cloned().unwrap_or(Value::Unit));
+                }
+                return Err("list_last expects List".into());
+            }
+            "clamp" => {
+                if let (Some(Value::Int(x)), Some(Value::Int(lo)), Some(Value::Int(hi))) =
+                    (args.get(0), args.get(1), args.get(2))
+                {
+                    let v = (*x).max(*lo).min(*hi);
+                    return Ok(Value::Int(v));
+                }
+                return Err("clamp expects (Int, Int, Int)".into());
+            }
             "str_char_at" => {
                 if let (Some(Value::Str(s)), Some(Value::Int(i))) = (args.get(0), args.get(1)) {
                     if *i < 0 {
@@ -1242,6 +1465,7 @@ impl BytecodeVm {
             }
             // --- std.fs ---
             "fs_read_text" => {
+                require_fs("fs_read_text")?;
                 let path = match args.get(0) {
                     Some(Value::Str(s)) => s,
                     _ => return Err("fs_read_text expects String path".into()),
@@ -1252,6 +1476,7 @@ impl BytecodeVm {
                 }
             }
             "fs_write_text" => {
+                require_fs("fs_write_text")?;
                 let path = match args.get(0) {
                     Some(Value::Str(s)) => s,
                     _ => return Err("fs_write_text expects (String, String)".into()),
@@ -1266,13 +1491,70 @@ impl BytecodeVm {
                 }
             }
             "fs_exists" => {
+                require_fs("fs_exists")?;
                 let path = match args.get(0) {
                     Some(Value::Str(s)) => s,
                     _ => return Err("fs_exists expects String path".into()),
                 };
                 return Ok(Value::Bool(std::path::Path::new(path).exists()));
             }
-            // --- std.json (minimal) ---
+            "fs_read_lines" => {
+                require_fs("fs_read_lines")?;
+                let path = match args.get(0) {
+                    Some(Value::Str(s)) => s,
+                    _ => return Err("fs_read_lines expects String path".into()),
+                };
+                match std::fs::read_to_string(path) {
+                    Ok(s) => {
+                        let lines: Vec<Value> = s
+                            .lines()
+                            .map(|l| Value::Str(l.to_string()))
+                            .collect();
+                        return Ok(Value::List(Arc::new(lines)));
+                    }
+                    Err(e) => return Err(format!("fs_read_lines `{path}`: {e}")),
+                }
+            }
+            "fs_append_text" => {
+                require_fs("fs_append_text")?;
+                let path = match args.get(0) {
+                    Some(Value::Str(s)) => s,
+                    _ => return Err("fs_append_text expects (String, String)".into()),
+                };
+                let body = match args.get(1) {
+                    Some(Value::Str(s)) => s,
+                    _ => return Err("fs_append_text expects (String, String)".into()),
+                };
+                use std::io::Write;
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .and_then(|mut f| f.write_all(body.as_bytes()))
+                {
+                    Ok(()) => return Ok(Value::Unit),
+                    Err(e) => return Err(format!("fs_append_text `{path}`: {e}")),
+                }
+            }
+            "fs_remove" => {
+                require_fs("fs_remove")?;
+                let path = match args.get(0) {
+                    Some(Value::Str(s)) => s,
+                    _ => return Err("fs_remove expects String path".into()),
+                };
+                match std::fs::remove_file(path) {
+                    Ok(()) => return Ok(Value::Bool(true)),
+                    Err(_) => return Ok(Value::Bool(false)),
+                }
+            }
+            // --- std.json ---
+            "json_get" => {
+                // json_get(map, key) -> value or Unit
+                if let (Some(Value::Map(m)), Some(Value::Str(k))) = (args.get(0), args.get(1)) {
+                    return Ok(m.get(k).cloned().unwrap_or(Value::Unit));
+                }
+                return Err("json_get expects (Map, String)".into());
+            }
             "json_stringify" => {
                 let v = args.get(0).cloned().unwrap_or(Value::Unit);
                 return Ok(Value::Str(json_stringify_value(&v)));
@@ -2277,14 +2559,33 @@ impl BytecodeVm {
                 Op::Try => {
                     let v = stack.pop().ok_or("stack underflow")?;
                     match v {
-                        Value::Enum { name, variant, fields } if variant == "Ok" => {
+                        Value::Enum { name, variant, fields }
+                            if variant == "Ok"
+                                && (name == "Result"
+                                    || name.starts_with("Result__")
+                                    || name.contains("Result")) =>
+                        {
+                            let _ = name;
                             stack.push(fields.get(0).cloned().unwrap_or(Value::Unit));
                         }
-                        Value::Enum { name, variant, fields } if variant == "Err" => {
-                            return Ok(Value::Enum { name, variant, fields });
+                        Value::Enum { name, variant, fields }
+                            if variant == "Err"
+                                && (name == "Result"
+                                    || name.starts_with("Result__")
+                                    || name.contains("Result")) =>
+                        {
+                            // Propagate Err out of the current function
+                            return Ok(Value::Enum {
+                                name,
+                                variant,
+                                fields,
+                            });
                         }
                         other => {
-                            return Err(format!("`?` operator expects Result, got {other}"));
+                            return Err(format!(
+                                "`?` expects Result.Ok / Result.Err, got {other}
+  help: only Result values can use the try operator"
+                            ));
                         }
                     }
                 }
@@ -2321,17 +2622,53 @@ impl BytecodeVm {
 
 pub fn build_artifact(src: &str) -> Result<Vec<u8>, String> {
     let mut program = parser::parse_program(src)?;
-    crate::stdlib::resolve(&program.imports)?;
+    inject_consts_into_main(&mut program);
+    sema::expand_uses(&mut program);
+    sema::desugar_match_expressions(&mut program);
+    sema::desugar_if_let(&mut program);
+    sema::desugar_defer(&mut program);
     sema::expand_trait_defaults(&mut program)?;
+    sema::expand_type_aliases(&mut program);
+    sema::desugar_tuple_lets(&mut program);
+    sema::desugar_struct_defaults(&mut program);
+    crate::stdlib::resolve(&program.imports)?;
     sema::check_program(&program)?;
+    sema::desugar_enum_variant_calls(&mut program);
     sema::monomorphize(&mut program)?;
     let hir = crate::hir::lower(&program);
     let mut mir = crate::mir::lower(&hir)?;
     crate::mir::optimize(&mut mir);
     let funcs = compile_from_mir(&mir)?;
-    let mut bytes = b"SNPBC1\n".to_vec();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"SNPBC2\n");
+    bytes.extend(format!("version={}\n", crate::VERSION).as_bytes());
+    bytes.extend(format!("funcs={}\n", funcs.len()).as_bytes());
+    let mut names: Vec<_> = funcs.keys().cloned().collect();
+    names.sort();
+    for n in &names {
+        bytes.extend(format!("fn {n}\n").as_bytes());
+    }
+    bytes.extend(b"---\n");
     bytes.extend(format!("{funcs:?}").as_bytes());
     Ok(bytes)
+}
+
+pub fn inspect_artifact(bytes: &[u8]) -> Result<(String, usize), String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| format!("artifact utf8: {e}"))?;
+    if !text.starts_with("SNPBC2") {
+        return Err("not an SNPBC2 artifact".into());
+    }
+    let mut ver = String::from("unknown");
+    let mut nfuncs = 0usize;
+    for line in text.lines().take(16) {
+        if let Some(v) = line.strip_prefix("version=") {
+            ver = v.to_string();
+        }
+        if let Some(v) = line.strip_prefix("funcs=") {
+            nfuncs = v.parse().unwrap_or(0);
+        }
+    }
+    Ok((ver, nfuncs))
 }
 
 pub fn execute(src: &str) -> Result<Value, String> {
@@ -2342,8 +2679,13 @@ pub fn execute(src: &str) -> Result<Value, String> {
     sema::desugar_if_let(&mut program);
     sema::desugar_defer(&mut program);
     sema::expand_trait_defaults(&mut program)?;
+    sema::expand_type_aliases(&mut program);
+    sema::desugar_tuple_lets(&mut program);
+    sema::desugar_struct_defaults(&mut program);
     crate::stdlib::resolve(&program.imports)?;
     sema::check_program(&program)?;
+    // Call→VariantLit before monomorphize (no full method desugar / re-typecheck)
+    sema::desugar_enum_variant_calls(&mut program);
     sema::monomorphize(&mut program)?;
     execute_program(&program)
 }
@@ -2992,6 +3334,391 @@ mod tests {
     fn mono_from_example_file() {
         let s = include_str!("../../examples/v30_mono.snp");
         assert_eq!(execute(s).unwrap(), Value::Int(107));
+    }
+
+    #[test]
+    fn sandbox_blocks_fs() {
+        set_sandbox(Sandbox {
+            allow_fs: false,
+            allow_net: false,
+        });
+        let s = r#"
+            fn main() -> Int {
+                fs_exists("/tmp/x");
+                return 1;
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        reset_sandbox();
+        assert!(err.contains("sandbox") || err.contains("blocked"), "got {err}");
+    }
+
+    #[test]
+    fn build_artifact_snpbc2_header() {
+        let src = r#"
+            fn main() -> Int { return 1; }
+        "#;
+        let bytes = build_artifact(src).unwrap();
+        let (ver, n) = inspect_artifact(&bytes).unwrap();
+        assert!(ver.contains(crate::VERSION) || !ver.is_empty());
+        assert!(n >= 1);
+        let text = std::str::from_utf8(&bytes).unwrap();
+        assert!(text.starts_with("SNPBC2"));
+    }
+
+    #[test]
+    fn json_object_and_fs_lines() {
+        let s = r#"
+            fn main() -> Int {
+                let m = map();
+                let m = map_set(m, "a", 10);
+                let m = map_set(m, "b", 3);
+                let raw = json_stringify(m);
+                let j = json_parse(raw);
+                let a = json_get(j, "a");
+                let path = "/tmp/snp_v23_test.txt";
+                fs_write_text(path, "one");
+                fs_append_text(path, "\ntwo");
+                fs_append_text(path, "\nthree");
+                let lines = fs_read_lines(path);
+                let n = list_len(lines);
+                fs_remove(path);
+                return a + n;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(13));
+    }
+
+    #[test]
+    fn result_try_ok_err() {
+        let s = r#"
+            fn parse(n: Int) -> Result {
+                if n < 0 {
+                    return Result.Err("neg");
+                }
+                return Result.Ok(n * 2);
+            }
+            fn main() -> Int {
+                let a = parse(21)?;
+                return a;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn result_try_propagates_err() {
+        let s = r#"
+            fn parse(n: Int) -> Result {
+                if n < 0 {
+                    return Result.Err("neg");
+                }
+                return Result.Ok(n);
+            }
+            fn main() -> Result {
+                let a = parse(-3)?;
+                return Result.Ok(a);
+            }
+        "#;
+        match execute(s).unwrap() {
+            Value::Enum { variant, .. } => assert_eq!(variant, "Err"),
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn labeled_break_outer() {
+        let s = r#"
+            fn main() -> Int {
+                let n = 0;
+                outer: loop {
+                    loop {
+                        n = n + 1;
+                        if n == 3 {
+                            break outer;
+                        }
+                        break;
+                    }
+                }
+                return n;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn plain_loop_break() {
+        let s = r#"
+            fn main() -> Int {
+                let n = 0;
+                loop {
+                    n = n + 1;
+                    if n >= 5 {
+                        break;
+                    }
+                }
+                return n;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(5));
+    }
+
+    #[test]
+    fn match_range_patterns() {
+        let s = r#"
+            fn main() -> Int {
+                let x = 7;
+                match x {
+                    1..=5 => { return 1; }
+                    6..=10 => { return 42; }
+                    _ => { return 0; }
+                }
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn match_range_exclusive() {
+        let s = r#"
+            fn main() -> Int {
+                let x = 5;
+                match x {
+                    1..5 => { return 1; }
+                    5..=5 => { return 42; }
+                    _ => { return 0; }
+                }
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn struct_destructure_let() {
+        let s = r#"
+            struct Player {
+                hp: Int,
+                atk: Int
+            }
+            fn main() -> Int {
+                let p = Player { hp: 40, atk: 2 };
+                let Player { hp, atk } = p;
+                return hp + atk;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn enum_impl_is_some() {
+        let s = r#"
+            enum BoxOpt[T] {
+                Empty,
+                Full(T)
+            }
+            impl BoxOpt[T] {
+                fn unwrap_or(self, d: T) -> T {
+                    match self {
+                        BoxOpt.Full(x) => { return x; }
+                        BoxOpt.Empty => { return d; }
+                        _ => { return d; }
+                    }
+                }
+            }
+            fn main() -> Int {
+                let a = BoxOpt.Full(42);
+                return BoxOpt.unwrap_or(a, 0);
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn match_non_exhaustive_errors() {
+        let s = r#"
+            enum Color { Red, Blue, Green }
+            fn main() -> Int {
+                let c = Color.Red;
+                match c {
+                    Color.Red => { return 1; }
+                    Color.Blue => { return 2; }
+                }
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(err.contains("non-exhaustive") || err.contains("Green"), "got {err}");
+    }
+
+    #[test]
+    fn struct_field_defaults() {
+        let s = r#"
+            struct Player {
+                hp: Int = 100,
+                name: String = "hero"
+            }
+            fn main() -> Int {
+                let p = Player { };
+                let q = Player { hp: 50 };
+                return p.hp + q.hp;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(150));
+    }
+
+    #[test]
+    fn stdlib_list_first_clamp() {
+        let s = r#"
+            fn main() -> Int {
+                let xs = list(10, 20, 30);
+                let a = list_first(xs);
+                let b = clamp(5, 0, 3);
+                return a + b;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(13));
+    }
+
+    #[test]
+    fn type_alias_and_tuple_let() {
+        let s = r#"
+            type IntPair = (Int, Int);
+            fn main() -> Int {
+                let p = (10, 32);
+                let (a, b) = p;
+                return a + b;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn type_alias_generic_id() {
+        let s = r#"
+            type Id[T] = T;
+            fn wrap[T](x: T) -> T {
+                return x;
+            }
+            fn main() -> Int {
+                return wrap(21) + wrap(21);
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn nested_generic_wrap() {
+        let s = r#"
+            struct Box[T] { value: T }
+            struct Wrap[T] { inner: T }
+            fn main() -> Int {
+                let b = Box { value: 7 };
+                let w = Wrap { inner: Box { value: 10 } };
+                return b.value + w.inner.value;
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::desugar_enum_variant_calls(&mut prog);
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let names: Vec<_> = prog.structs.iter().map(|s| s.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("Box__")),
+            "expected Box mono, got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("Wrap__")),
+            "expected Wrap mono, got {names:?}"
+        );
+        assert_eq!(execute(s).unwrap(), Value::Int(17));
+    }
+
+    #[test]
+    fn prelude_option_generic_mono() {
+        let s = r#"
+            fn main() -> Int {
+                let a = Option.Some(15);
+                match a {
+                    Option.Some(n) => { return n; }
+                    Option.None => { return 0; }
+                    _ => { return -1; }
+                }
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::desugar_enum_variant_calls(&mut prog);
+        crate::sema::monomorphize(&mut prog).unwrap();
+        assert!(
+            prog.enums.iter().any(|e| e.name.starts_with("Option__")),
+            "expected Option__Int, got {:?}",
+            prog.enums.iter().map(|e| e.name.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(execute(s).unwrap(), Value::Int(15));
+    }
+
+    #[test]
+    fn generic_impl_box_get() {
+        let s = r#"
+            struct Box[T] { value: T }
+            impl Box[T] {
+                fn get(self) -> T {
+                    return self.value;
+                }
+                fn set(self, v: T) -> Self {
+                    return Box { value: v };
+                }
+            }
+            fn main() -> Int {
+                let b = Box { value: 21 };
+                let x = Box.get(b);
+                let b2 = Box.set(Box { value: 0 }, 21);
+                let y = Box.get(b2);
+                return x + y;
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::desugar_enum_variant_calls(&mut prog);
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let methods: Vec<_> = prog
+            .functions
+            .iter()
+            .map(|f| f.name.clone())
+            .filter(|n| n.contains("get") || n.contains("set"))
+            .collect();
+        assert!(
+            methods.iter().any(|n| n.contains("Box__") && n.ends_with(".get")),
+            "expected Box__Int.get, got {methods:?}"
+        );
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn mono_enum_option_creates_spec() {
+        let s = r#"
+            enum BoxOpt[T] {
+                Empty,
+                Full(T)
+            }
+            fn main() -> Int {
+                let a = BoxOpt.Full(42);
+                match a {
+                    BoxOpt.Full(n) => { return n; }
+                    BoxOpt.Empty => { return 0; }
+                    _ => { return -1; }
+                }
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::desugar_enum_variant_calls(&mut prog);
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let names: Vec<_> = prog.enums.iter().map(|e| e.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("BoxOpt__")),
+            "expected BoxOpt__Int, got {names:?}"
+        );
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
     }
 
     #[test]

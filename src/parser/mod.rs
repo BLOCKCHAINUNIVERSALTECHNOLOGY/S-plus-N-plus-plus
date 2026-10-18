@@ -85,6 +85,7 @@ impl<'a> Parser<'a> {
         let mut externs = Vec::new();
         let mut consts = Vec::new();
         let mut uses = Vec::new();
+        let mut type_aliases = Vec::new();
         self.parse_items(
             &mut imports,
             &mut structs,
@@ -94,6 +95,7 @@ impl<'a> Parser<'a> {
             &mut externs,
             &mut consts,
             &mut uses,
+            &mut type_aliases,
             &[],
             0,
             true, // root: stop at Eof
@@ -107,6 +109,7 @@ impl<'a> Parser<'a> {
             externs,
             consts,
             uses,
+            type_aliases,
         })
     }
 
@@ -120,6 +123,7 @@ impl<'a> Parser<'a> {
         externs: &mut Vec<crate::ast::ExternFn>,
         consts: &mut Vec<(String, Expr)>,
         uses: &mut Vec<crate::ast::UseDecl>,
+        type_aliases: &mut Vec<crate::ast::TypeAlias>,
         module_path: &[String],
         depth: usize,
         until_eof: bool,
@@ -192,6 +196,11 @@ impl<'a> Parser<'a> {
                 Token::Use => {
                     uses.push(self.parse_use()?);
                 }
+                Token::Type => {
+                    let mut ta = self.type_alias()?;
+                    ta.visibility = vis;
+                    type_aliases.push(ta);
+                }
                 Token::Fn => {
                     let mut f = self.function()?;
                     f.visibility = vis;
@@ -239,6 +248,7 @@ impl<'a> Parser<'a> {
                             externs,
                             consts,
                             uses,
+                            type_aliases,
                             &path,
                             depth + 1,
                             false,
@@ -254,7 +264,7 @@ impl<'a> Parser<'a> {
                 }
                 other => {
                     return Err(self.err(format!(
-                        "expected import, struct, enum, trait, fn, extern, impl or mod, got {:?}",
+                        "expected import, struct, enum, trait, type, fn, extern, impl or mod, got {:?}",
                         other
                     )));
                 }
@@ -265,7 +275,7 @@ impl<'a> Parser<'a> {
 
     /// `extern "C" fn name(a: Int, b: Int) -> Int;`
     
-    /// `impl Player { ... }` or `impl Drawable for Player { ... }`
+    /// `impl Player { ... }` or `impl Box[T] { ... }` or `impl Drawable for Player { ... }`
     /// Methods lower to `Player.method` with self: Player.
     fn impl_block(&mut self) -> Result<Vec<Function>, String> {
         self.eat(Token::Impl)?;
@@ -283,10 +293,33 @@ impl<'a> Parser<'a> {
         } else {
             (first, None)
         };
+        // Optional type params: `impl Box[T] { ... }`
+        let mut impl_type_params = Vec::new();
+        if *self.current() == Token::LBracket {
+            self.bump();
+            loop {
+                match self.bump() {
+                    Token::Ident(t) => impl_type_params.push(t),
+                    _ => return Err(self.err("expected type parameter in impl")),
+                }
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.eat(Token::RBracket)?;
+        }
         self.eat(Token::LBrace)?;
         let mut methods = Vec::new();
         while *self.current() != Token::RBrace && *self.current() != Token::Eof {
             let mut f = self.function()?;
+            // Merge impl type params into method (method can also declare its own)
+            for tp in &impl_type_params {
+                if !f.type_params.iter().any(|x| x == tp) {
+                    f.type_params.push(tp.clone());
+                }
+            }
             if let Some(first_p) = f.params.first() {
                 if first_p == "self" {
                     if f.param_types.is_empty() {
@@ -519,6 +552,42 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
         })
     }
 
+
+    fn type_alias(&mut self) -> Result<crate::ast::TypeAlias, String> {
+        self.eat(Token::Type)?;
+        let name = match self.bump() {
+            Token::Ident(n) => n,
+            _ => return Err(self.err("expected type alias name")),
+        };
+        let mut type_params = Vec::new();
+        if *self.current() == Token::LBracket {
+            self.bump();
+            loop {
+                match self.bump() {
+                    Token::Ident(t) => type_params.push(t),
+                    _ => return Err(self.err("expected type parameter in type alias")),
+                }
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.eat(Token::RBracket)?;
+        }
+        self.eat(Token::Eq)?;
+        let target = self.parse_type()?;
+        if *self.current() == Token::Semi {
+            self.bump();
+        }
+        Ok(crate::ast::TypeAlias {
+            name,
+            type_params,
+            target,
+            visibility: Visibility::Public,
+        })
+    }
+
     fn struct_def(&mut self) -> Result<StructDef, String> {
         self.eat(Token::Struct)?;
         let name = match self.bump() {
@@ -543,6 +612,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
         }
         self.eat(Token::LBrace)?;
         let mut fields = Vec::new();
+        let mut defaults = Vec::new();
         while *self.current() != Token::RBrace && *self.current() != Token::Eof {
             let fname = match self.bump() {
                 Token::Ident(n) => n,
@@ -550,6 +620,11 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             };
             self.eat(Token::Colon)?;
             let fty = self.parse_type()?;
+            if *self.current() == Token::Eq {
+                self.bump();
+                let def = self.expression()?;
+                defaults.push((fname.clone(), def));
+            }
             fields.push((fname, fty));
             if *self.current() == Token::Comma { self.bump(); }
         }
@@ -560,6 +635,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             module_path: vec![],
             type_params,
             fields,
+            defaults,
         })
     }
 
@@ -819,9 +895,44 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             Token::For => self.for_statement(),
             Token::Match => self.match_statement(),
             Token::Return => { self.bump(); Ok(Stmt::Return(self.expression()?)) }
-            Token::Break => { self.bump(); Ok(Stmt::Break) }
-            Token::Continue => { self.bump(); Ok(Stmt::Continue) }
+            Token::Break => {
+                self.bump();
+                let label = if matches!(*self.current(), Token::Ident(_)) {
+                    match self.bump() {
+                        Token::Ident(n) => Some(n),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                Ok(Stmt::Break(label))
+            }
+            Token::Continue => {
+                self.bump();
+                let label = if matches!(*self.current(), Token::Ident(_)) {
+                    match self.bump() {
+                        Token::Ident(n) => Some(n),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                Ok(Stmt::Continue(label))
+            }
             Token::Ident(name) => {
+                // `label: loop/while/for ...`
+                if self.peek_at(1) == Some(&Token::Colon)
+                    && matches!(
+                        self.peek_at(2),
+                        Some(Token::Loop | Token::While | Token::For)
+                    )
+                {
+                    let label = name.clone();
+                    self.bump(); // ident
+                    self.bump(); // colon
+                    let inner = self.statement()?;
+                    return Ok(Stmt::Labeled(label, Box::new(inner)));
+                }
                 // assignment or compound assignment or field assign or expr
                 if self.peek_at(1) == Some(&Token::Eq) {
                     let name = name.clone();
@@ -882,24 +993,95 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
     }
 
     fn let_statement(&mut self) -> Result<Stmt, String> {
-        let name = match self.bump() {
-            Token::Ident(n) => n,
-            _ => return Err("expected variable name after `let`".into()),
-        };
-        let declared = if *self.current() == Token::Colon {
+        // `let (a, b) = expr` — desugar to temp + tuple_get
+        if *self.current() == Token::LParen {
             self.bump();
-            Some(self.parse_type()?)
-        } else {
-            None
-        };
-        if *self.current() != Token::Eq {
-            if let Some(ty) = declared {
-                return Ok(Stmt::Decl(name, ty));
+            let mut names = Vec::new();
+            if *self.current() != Token::RParen {
+                loop {
+                    match self.bump() {
+                        Token::Ident(n) => names.push(n),
+                        Token::Underscore => names.push("_".into()),
+                        _ => return Err(self.err("expected name in tuple let")),
+                    }
+                    if *self.current() == Token::Comma {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
             }
-            return Err("let requires an initializer or explicit type".into());
+            self.eat(Token::RParen)?;
+            self.eat(Token::Eq)?;
+            let value = self.expression()?;
+            Ok(Stmt::Let(
+                format!("__tuple_let__{}", names.join(",")),
+                value,
+            ))
+        } else if matches!(self.current(), Token::Ident(_))
+            && self.peek_at(1) == Some(&Token::LBrace)
+        {
+            // `let Player { hp, name: n } = p`
+            let struct_name = match self.bump() {
+                Token::Ident(n) => n,
+                _ => unreachable!(),
+            };
+            self.bump(); // {
+            let mut pairs = Vec::new(); // field:binding
+            while *self.current() != Token::RBrace && *self.current() != Token::Eof {
+                let field = match self.bump() {
+                    Token::Ident(f) => f,
+                    Token::Underscore => {
+                        // skip `..` style later
+                        return Err(self.err("expected field name in struct let"));
+                    }
+                    _ => return Err(self.err("expected field name in struct let")),
+                };
+                let binding = if *self.current() == Token::Colon {
+                    self.bump();
+                    match self.bump() {
+                        Token::Ident(b) => b,
+                        Token::Underscore => "_".into(),
+                        _ => return Err(self.err("expected binding name after `:`")),
+                    }
+                } else {
+                    field.clone()
+                };
+                pairs.push(format!("{field}:{binding}"));
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.eat(Token::RBrace)?;
+            self.eat(Token::Eq)?;
+            let value = self.expression()?;
+            // Encode: __struct_let__Name__field:bind,field2:bind2
+            Ok(Stmt::Let(
+                format!("__struct_let__{struct_name}__{}", pairs.join(",")),
+                value,
+            ))
+        } else {
+            let name = match self.bump() {
+                Token::Ident(n) => n,
+                _ => return Err("expected variable name after `let`".into()),
+            };
+            let declared = if *self.current() == Token::Colon {
+                self.bump();
+                Some(self.parse_type()?)
+            } else {
+                None
+            };
+            if *self.current() != Token::Eq {
+                if let Some(ty) = declared {
+                    return Ok(Stmt::Decl(name, ty));
+                }
+                return Err("let requires an initializer or explicit type".into());
+            }
+            self.bump();
+            Ok(Stmt::Let(name, self.expression()?))
         }
-        self.bump();
-        Ok(Stmt::Let(name, self.expression()?))
     }
 
     fn if_statement(&mut self) -> Result<Stmt, String> {
@@ -970,7 +1152,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                     crate::ast::MatchArm {
                         pattern: crate::ast::Pattern::Wildcard,
                         guard: None,
-                        body: vec![Stmt::Break],
+                        body: vec![Stmt::Break(None)],
                     },
                 ],
             };
@@ -1191,7 +1373,23 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                     Ok(Pattern::Var(n))
                 }
             }
-            Token::Int(v) => Ok(Pattern::Int(v)),
+            Token::Int(v) => {
+                if matches!(*self.current(), Token::DotDot | Token::DotDotEq) {
+                    let inclusive = *self.current() == Token::DotDotEq;
+                    self.bump();
+                    let end = match self.bump() {
+                        Token::Int(e) => e,
+                        _ => return Err(self.err("expected integer after `..` in range pattern")),
+                    };
+                    Ok(Pattern::Range {
+                        start: v,
+                        end,
+                        inclusive,
+                    })
+                } else {
+                    Ok(Pattern::Int(v))
+                }
+            }
             Token::True => Ok(Pattern::Bool(true)),
             Token::False => Ok(Pattern::Bool(false)),
             Token::Str(s) => Ok(Pattern::Str(s)),

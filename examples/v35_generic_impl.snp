@@ -1,0 +1,20 @@
+// 2.15 — generic impl methods
+struct Box[T] {
+    value: T
+}
+
+impl Box[T] {
+    fn get(self) -> T {
+        return self.value;
+    }
+    fn map_add(self, n: Int) -> Int {
+        return self.value + n;
+    }
+}
+
+fn main() -> Int {
+    let b = Box { value: 40 };
+    let a = Box.get(b);
+    let c = Box.map_add(Box { value: 1 }, 1);
+    return a + c;
+}

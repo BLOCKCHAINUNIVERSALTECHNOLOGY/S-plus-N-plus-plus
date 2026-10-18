@@ -1,0 +1,14 @@
+// 2.18 — default fields + stdlib polish
+struct Player {
+    hp: Int = 100,
+    atk: Int = 10
+}
+
+fn main() -> Int {
+    let p = Player { };
+    let q = Player { hp: 80 };
+    let xs = list(1, 2, 3);
+    let first = list_first(xs);
+    let c = clamp(99, 0, 50);
+    return p.hp + q.hp + p.atk + first + c;
+}

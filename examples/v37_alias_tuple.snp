@@ -1,0 +1,8 @@
+// 2.17 — type aliases + tuple let
+type IntPair = (Int, Int);
+
+fn main() -> Int {
+    let p = (20, 22);
+    let (a, b) = p;
+    return a + b;
+}

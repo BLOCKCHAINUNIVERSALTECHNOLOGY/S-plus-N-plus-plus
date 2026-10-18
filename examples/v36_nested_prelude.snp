@@ -1,0 +1,21 @@
+// 2.16 — nested generics + prelude Option[T]
+struct Box[T] {
+    value: T
+}
+
+struct Wrap[T] {
+    inner: T
+}
+
+fn main() -> Int {
+    let b = Box { value: 3 };
+    let w = Wrap { inner: Box { value: 4 } };
+    let o = Option.Some(5);
+    let x = 0;
+    match o {
+        Option.Some(n) => { x = n; }
+        Option.None => { x = 0; }
+        _ => { x = -1; }
+    }
+    return b.value + w.inner.value + x;
+}

@@ -118,6 +118,8 @@ fn types_compatible(expected: &Type, got: &Type) -> bool {
         // Option parsed as StructApp before resolution
         (Type::Enum(a), Type::StructApp(b, _)) | (Type::StructApp(a, _), Type::Enum(b)) => a == b,
         (Type::EnumApp(a, _), Type::StructApp(b, _)) | (Type::StructApp(a, _), Type::EnumApp(b, _)) => a == b,
+        (Type::Struct(a), Type::Enum(b)) | (Type::Enum(a), Type::Struct(b)) => a == b,
+        (Type::Struct(a), Type::EnumApp(b, _)) | (Type::EnumApp(a, _), Type::Struct(b)) => a == b,
         (Type::List, Type::ListOf(_)) | (Type::ListOf(_), Type::List) => true,
         (Type::Map, Type::MapOf(_, _)) | (Type::MapOf(_, _), Type::Map) => true,
         _ => false,
@@ -144,12 +146,12 @@ fn expr_type(
             let builtins = [
                 "print", "spawn", "join", "channel", "send", "receive",
                 "str_len", "str_contains", "str_upper", "str_lower", "str_trim", "str_concat",
-                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_insert", "list_remove", "list_pop", "str_char_at", "map_get_or", "sqrt", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "str_parse_int", "str_parse_float", "int_to_str", "float_to_str", "floor", "ceil", "round", "list_insert", "list_remove", "list_pop", "str_char_at", "map_get_or", "sqrt", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
+                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_insert", "list_remove", "list_pop", "list_first", "list_last", "clamp", "str_char_at", "map_get_or", "sqrt", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "str_parse_int", "str_parse_float", "int_to_str", "float_to_str", "floor", "ceil", "round", "list_insert", "list_remove", "list_pop", "list_first", "list_last", "clamp", "str_char_at", "map_get_or", "sqrt", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
                 "map", "map_set", "map_get", "map_has", "map_len", "map_keys", "map_values", "map_remove",
                 "abs", "min", "max", "pow", "sqrt_approx",
                 "now_ms", "rand", "rand_range",
-                "fs_read_text", "fs_write_text", "fs_exists",
-                "json_stringify", "json_parse",
+                "fs_read_text", "fs_write_text", "fs_exists", "fs_read_lines", "fs_append_text", "fs_remove",
+                "json_stringify", "json_parse", "json_get",
                 "assert", "assert_eq", "assert_true", "assert_false", "panic", "todo",
                 "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
             ];
@@ -165,9 +167,11 @@ fn expr_type(
                     "str_contains" | "map_has" | "fs_exists" | "str_starts_with" | "str_ends_with" | "list_is_empty" | "str_is_empty" => Type::Bool,
                     "map_len" | "list_find" => Type::Int,
                     "str_upper" | "str_lower" | "str_trim" | "str_concat" | "str_replace" | "fs_read_text" | "json_stringify" => Type::Str,
+                    "fs_read_lines" => Type::List,
                     "list" | "list_push" | "list_set" | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_slice" | "list_rev" | "list_sort" | "list_sort_by" | "list_take" | "list_drop" | "range" | "str_split" => Type::List,
                     "list_contains" => Type::Bool,
-                    "list_sum" | "list_min" | "list_max" | "str_index_of" | "tuple_len" => Type::Int,
+                    "list_sum" | "list_min" | "list_max" | "str_index_of" | "tuple_len" | "clamp" => Type::Int,
+                    "list_first" | "list_last" => Type::Unknown,
                     "tuple_get" => Type::Unknown,
                     "str_join" | "str_substring" | "str_trim" | "str_lower" | "str_upper" | "int_to_str" | "float_to_str" => Type::Str,
                     "str_parse_int" | "floor" | "ceil" | "round" => Type::Int,
@@ -181,8 +185,8 @@ fn expr_type(
                     "map" | "map_set" | "map_remove" | "map_merge" => Type::Map,
                     "map_keys" | "map_values" | "list_flatten" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_insert" | "list_remove" | "list_pop" | "list_take" | "list_drop" | "str_lines" | "enumerate" => Type::List,
                     "str_repeat" => Type::Str,
-                    "json_parse" => Type::Unknown,
-                    "fs_write_text" | "assert" | "assert_true" | "assert_false" | "assert_eq" | "panic" | "todo" => Type::Unit,
+                    "json_parse" | "json_get" => Type::Unknown,
+                    "fs_write_text" | "fs_append_text" | "assert" | "assert_true" | "assert_false" | "assert_eq" | "panic" | "todo" => Type::Unit,
                     _ => Type::Unit,
                 });
             }
@@ -242,7 +246,8 @@ fn expr_type(
                                 && got != Type::Unknown
                             {
                                 return Err(format!(
-                                    "function `{n}` type parameter `{g}` inferred as both {} and {}",
+                                    "function `{n}` type parameter `{g}` inferred as both {} and {}
+  help: use the same concrete type for all `{g}` arguments, or split into separate functions",
                                     type_name(prev),
                                     type_name(&got)
                                 ));
@@ -513,7 +518,12 @@ fn expr_type(
                 for p in &def.type_params {
                     type_args.push(subst.get(p).cloned().unwrap_or(Type::Unknown));
                 }
-                Ok(Type::EnumApp(enum_name.clone(), type_args))
+                // Option.None has no payload — keep bare Enum so it unifies with Option[Int]
+                if type_args.iter().all(|t| *t == Type::Unknown) {
+                    Ok(Type::Enum(enum_name.clone()))
+                } else {
+                    Ok(Type::EnumApp(enum_name.clone(), type_args))
+                }
             } else {
                 Ok(Type::Enum(enum_name.clone()))
             }
@@ -586,11 +596,25 @@ fn expr_type(
 
         Expr::Try(inner) => {
             let t = expr_type(inner, env, sigs, structs)?;
-            match t {
-                Type::Enum(n) if n == "Result" => Ok(Type::Int),
-                Type::EnumApp(n, _) if n == "Result" => Ok(Type::Int),
+            fn is_result_name(n: &str) -> bool {
+                n == "Result" || n.starts_with("Result__") || n.ends_with("Result")
+            }
+            match &t {
+                Type::Enum(n) if is_result_name(n) => Ok(Type::Unknown),
+                Type::EnumApp(n, args) if is_result_name(n) => {
+                    Ok(args.first().cloned().unwrap_or(Type::Unknown))
+                }
+                // `-> Result` parses as Struct until enum resolution
+                Type::Struct(n) if is_result_name(n) => Ok(Type::Unknown),
+                Type::StructApp(n, args) if is_result_name(n) => {
+                    Ok(args.first().cloned().unwrap_or(Type::Unknown))
+                }
                 Type::Unknown => Ok(Type::Unknown),
-                other => Err(format!("`?` expects Result, got {}", type_name(&other))),
+                other => Err(format!(
+                    "`?` expects Result (got {})
+  help: use Result.Ok(v) / Result.Err(e), or match explicitly",
+                    type_name(other)
+                )),
             }
         }
         Expr::MatchExpr { scrutinee, arms } => {
@@ -788,12 +812,17 @@ fn check_typed_stmts(
                 let got = expr_type(expr, env, sigs, structs)?;
                 let old = env
                     .get(name)
-                    .ok_or_else(|| format!("assignment to undefined variable `{name}`"))?;
-                if *old != got && got != Type::Unknown && *old != Type::Unknown {
+                    .ok_or_else(|| format!("assignment to undefined variable `{name}`"))?
+                    .clone();
+                if old != got
+                    && got != Type::Unknown
+                    && old != Type::Unknown
+                    && !types_compatible(&old, &got)
+                {
                     return Err(format!(
                         "cannot assign {} to `{name}` of type {}",
                         type_name(&got),
-                        type_name(old)
+                        type_name(&old)
                     ));
                 }
             }
@@ -807,7 +836,11 @@ fn check_typed_stmts(
             }
             Stmt::Return(expr) => {
                 let got = expr_type(expr, env, sigs, structs)?;
-                if *ret != Type::Unit && got != *ret && got != Type::Unknown && *ret != Type::Unknown
+                if *ret != Type::Unit
+                    && got != *ret
+                    && got != Type::Unknown
+                    && *ret != Type::Unknown
+                    && !types_compatible(ret, &got)
                 {
                     return Err(format!(
                         "return type mismatch: expected {}, got {}",
@@ -928,7 +961,7 @@ fn check_typed_stmts(
                     check_typed_stmts(&arm.body, &mut arm_env, sigs, ret, structs)?;
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
             Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
@@ -1048,8 +1081,12 @@ fn ownership_expr(
                         | "fs_read_text"
                         | "fs_write_text"
                         | "fs_exists"
+                        | "fs_read_lines"
+                        | "fs_append_text"
+                        | "fs_remove"
                         | "json_stringify"
                         | "json_parse"
+                        | "json_get"
                         | "assert_eq"
                         | "assert_true"
                         | "assert_false"
@@ -1212,7 +1249,7 @@ fn ownership_stmts(
                     ownership_stmts(&arm.body, &mut e, &mut m, sigs)?;
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
             Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
@@ -1426,7 +1463,7 @@ fn definite_stmts(
                     definite_stmts(&arm.body, &mut t, &mut a)?;
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
             Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
@@ -1445,9 +1482,10 @@ pub fn check(fs: &[Function]) -> Result<(), String> {
         traits: vec![],
         functions: fs.to_vec(),
         externs: vec![],
-            consts: vec![],
-            uses: vec![],
-        })
+        consts: vec![],
+        uses: vec![],
+        type_aliases: vec![],
+    })
 }
 
 
@@ -1515,7 +1553,7 @@ fn desugar_match_expr_stmts(
                 desugar_match_expr_stmts(yes, helpers, id);
                 desugar_match_expr_stmts(no, helpers, id);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
             Stmt::Decl(_, _) => {}
         }
     }
@@ -1739,10 +1777,10 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
             name: "Result".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
-            type_params: vec![],
+            type_params: vec!["T".into(), "E".into()],
             variants: vec![
-                ("Ok".into(), vec![Type::Int]),
-                ("Err".into(), vec![Type::Str]),
+                ("Ok".into(), vec![Type::Generic("T".into())]),
+                ("Err".into(), vec![Type::Generic("E".into())]),
             ],
         };
         enums.insert("Result".into(), result_enum);
@@ -1752,10 +1790,10 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
             name: "Option".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
-            type_params: vec![],
+            type_params: vec!["T".into()],
             variants: vec![
                 ("None".into(), vec![]),
-                ("Some".into(), vec![Type::Int]),
+                ("Some".into(), vec![Type::Generic("T".into())]),
             ],
         };
         enums.insert("Option".into(), opt);
@@ -1884,7 +1922,7 @@ fn desugar_stmts(
                     desugar_stmts(&mut arm.body, &mut arm_env, sigs, structs)?;
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
             Stmt::Decl(_, _) => {}
             Stmt::Defer(body) => {
                 let _ = body;
@@ -1980,8 +2018,17 @@ fn desugar_expr(
                 na.push(desugar_expr(a, env, sigs, structs)?);
             }
             if let Some((base, variant)) = n.split_once('.') {
-                let is_enum = with_enums(|enums| enums.contains_key(base));
-                if is_enum {
+                // Prefer real function (e.g. BoxOpt.unwrap_or) over enum variant
+                if sigs.contains_key(n) {
+                    return Ok(Expr::Call(n.clone(), na));
+                }
+                let is_variant = with_enums(|enums| {
+                    enums
+                        .get(base)
+                        .map(|def| def.variants.iter().any(|(vn, _)| vn == variant))
+                        .unwrap_or(false)
+                });
+                if is_variant {
                     return Ok(Expr::VariantLit {
                         enum_name: base.to_string(),
                         variant: variant.to_string(),
@@ -2235,8 +2282,13 @@ fn pattern_variant_names(p: &crate::ast::Pattern) -> Vec<String> {
 }
 
 fn check_match_exhaustiveness(program: &Program) -> Result<(), String> {
-    let enums: HashMap<String, crate::ast::EnumDef> = program.enums.iter().map(|e| (e.name.clone(), e.clone())).collect();
-    // include prelude Result
+    let mut enums: HashMap<String, crate::ast::EnumDef> = program.enums.iter().map(|e| (e.name.clone(), e.clone())).collect();
+    // Prelude Option / Result for exhaustiveness when not in program.enums yet
+    with_enums(|global| {
+        for (k, v) in global.iter() {
+            enums.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    });
     fn walk_stmts(stmts: &[Stmt], enums: &HashMap<String, crate::ast::EnumDef>) -> Result<(), String> {
         for s in stmts {
             match s {
@@ -2361,7 +2413,7 @@ fn rewrite_calls_stmts(stmts: &mut [Stmt], aliases: &HashMap<String, String>) {
                 rewrite_calls_stmts(yes, aliases);
                 rewrite_calls_stmts(no, aliases);
             }
-            Stmt::Break | Stmt::Continue | Stmt::Decl(_, _) => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Decl(_, _) | Stmt::Labeled(_, _) => {}
         }
     }
 }
@@ -2626,10 +2678,10 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             name: "Result".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
-            type_params: vec![],
+            type_params: vec!["T".into(), "E".into()],
             variants: vec![
-                ("Ok".into(), vec![Type::Int]),
-                ("Err".into(), vec![Type::Str]),
+                ("Ok".into(), vec![Type::Generic("T".into())]),
+                ("Err".into(), vec![Type::Generic("E".into())]),
             ],
         };
         enums.insert("Result".into(), result_enum);
@@ -2639,10 +2691,10 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             name: "Option".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
-            type_params: vec![],
+            type_params: vec!["T".into()],
             variants: vec![
                 ("None".into(), vec![]),
-                ("Some".into(), vec![Type::Int]),
+                ("Some".into(), vec![Type::Generic("T".into())]),
             ],
         };
         enums.insert("Option".into(), opt);
@@ -2868,7 +2920,7 @@ fn rewrite_types_in_stmts(stmts: &mut [Stmt], subst: &HashMap<String, Type>) {
                 rewrite_types_in_stmts(yes, subst);
                 rewrite_types_in_stmts(no, subst);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
         }
     }
 }
@@ -3090,13 +3142,347 @@ fn rewrite_calls_in_stmts(
                 rewrite_calls_in_stmts(yes, templates, env, sigs, structs, needed);
                 rewrite_calls_in_stmts(no, templates, env, sigs, structs, needed);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
         }
     }
 }
 
 /// Specialize generic functions at concrete call sites.
 /// Example: `identity(42)` with `fn identity[T](x: T) -> T` creates `identity__Int`.
+
+/// Expand `type Name[T] = Target` into Struct names used as types.
+
+/// Fill missing struct-literal fields from `struct S { x: Int = 0 }` defaults.
+pub fn desugar_struct_defaults(program: &mut Program) {
+    let defs: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
+    if defs.values().all(|s| s.defaults.is_empty()) {
+        return;
+    }
+    for f in &mut program.functions {
+        fill_struct_defaults_stmts(&mut f.body, &defs);
+    }
+}
+
+fn fill_struct_defaults_stmts(stmts: &mut [Stmt], defs: &HashMap<String, StructDef>) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                fill_struct_defaults_expr(e, defs);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                fill_struct_defaults_expr(object, defs);
+                fill_struct_defaults_expr(value, defs);
+            }
+            Stmt::If(c, a, b) => {
+                fill_struct_defaults_expr(c, defs);
+                fill_struct_defaults_stmts(a, defs);
+                fill_struct_defaults_stmts(b, defs);
+            }
+            Stmt::While(c, body) => {
+                fill_struct_defaults_expr(c, defs);
+                fill_struct_defaults_stmts(body, defs);
+            }
+            Stmt::For { start, end, body, .. } => {
+                fill_struct_defaults_expr(start, defs);
+                fill_struct_defaults_expr(end, defs);
+                fill_struct_defaults_stmts(body, defs);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                fill_struct_defaults_expr(iter, defs);
+                fill_struct_defaults_stmts(body, defs);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                fill_struct_defaults_expr(scrutinee, defs);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        fill_struct_defaults_expr(g, defs);
+                    }
+                    fill_struct_defaults_stmts(&mut arm.body, defs);
+                }
+            }
+            Stmt::Defer(body) => fill_struct_defaults_stmts(body, defs),
+            Stmt::IfLet { value, yes, no, .. } => {
+                fill_struct_defaults_expr(value, defs);
+                fill_struct_defaults_stmts(yes, defs);
+                fill_struct_defaults_stmts(no, defs);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn fill_struct_defaults_expr(e: &mut Expr, defs: &HashMap<String, StructDef>) {
+    match e {
+        Expr::StructLit { name, fields } => {
+            for (_, fe) in fields.iter_mut() {
+                fill_struct_defaults_expr(fe, defs);
+            }
+            if let Some(def) = defs.get(name) {
+                let present: HashSet<String> = fields.iter().map(|(n, _)| n.clone()).collect();
+                for (fname, def_expr) in &def.defaults {
+                    if !present.contains(fname) {
+                        fields.push((fname.clone(), def_expr.clone()));
+                    }
+                }
+            }
+        }
+        Expr::Call(_, args) | Expr::VariantLit { args, .. } => {
+            for a in args {
+                fill_struct_defaults_expr(a, defs);
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            fill_struct_defaults_expr(c, defs);
+            for a in args {
+                fill_struct_defaults_expr(a, defs);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            fill_struct_defaults_expr(receiver, defs);
+            for a in args {
+                fill_struct_defaults_expr(a, defs);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            fill_struct_defaults_expr(a, defs);
+            fill_struct_defaults_expr(b, defs);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => fill_struct_defaults_expr(a, defs),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            fill_struct_defaults_expr(cond, defs);
+            fill_struct_defaults_expr(then_branch, defs);
+            fill_struct_defaults_expr(else_branch, defs);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            fill_struct_defaults_expr(scrutinee, defs);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    fill_struct_defaults_expr(g, defs);
+                }
+                fill_struct_defaults_expr(&mut a.value, defs);
+            }
+        }
+        Expr::Tuple(items) => {
+            for x in items {
+                fill_struct_defaults_expr(x, defs);
+            }
+        }
+        Expr::Lambda { body, .. } => fill_struct_defaults_stmts(body, defs),
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    fill_struct_defaults_expr(x, defs);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn expand_type_aliases(program: &mut Program) {
+    if program.type_aliases.is_empty() {
+        return;
+    }
+    let aliases: HashMap<String, (Vec<String>, Type)> = program
+        .type_aliases
+        .iter()
+        .map(|a| (a.name.clone(), (a.type_params.clone(), a.target.clone())))
+        .collect();
+
+    fn resolve(t: &Type, aliases: &HashMap<String, (Vec<String>, Type)>, depth: usize) -> Type {
+        if depth > 16 {
+            return t.clone();
+        }
+        match t {
+            Type::Struct(n) => {
+                if let Some((params, target)) = aliases.get(n) {
+                    if params.is_empty() {
+                        return resolve(target, aliases, depth + 1);
+                    }
+                }
+                t.clone()
+            }
+            Type::StructApp(n, args) => {
+                if let Some((params, target)) = aliases.get(n) {
+                    if params.len() == args.len() {
+                        let mut subst = HashMap::new();
+                        for (p, a) in params.iter().zip(args.iter()) {
+                            subst.insert(p.clone(), resolve(a, aliases, depth + 1));
+                        }
+                        let target = normalize_type(target, params);
+                        return apply_subst_type(&target, &subst);
+                    }
+                }
+                Type::StructApp(
+                    n.clone(),
+                    args.iter().map(|a| resolve(a, aliases, depth + 1)).collect(),
+                )
+            }
+            Type::ListOf(inner) => Type::ListOf(Box::new(resolve(inner, aliases, depth + 1))),
+            Type::MapOf(k, v) => Type::MapOf(
+                Box::new(resolve(k, aliases, depth + 1)),
+                Box::new(resolve(v, aliases, depth + 1)),
+            ),
+            Type::Tuple(ts) => Type::Tuple(ts.iter().map(|x| resolve(x, aliases, depth + 1)).collect()),
+            Type::Ref(i) => Type::Ref(Box::new(resolve(i, aliases, depth + 1))),
+            Type::MutRef(i) => Type::MutRef(Box::new(resolve(i, aliases, depth + 1))),
+            Type::EnumApp(n, args) => Type::EnumApp(
+                n.clone(),
+                args.iter().map(|a| resolve(a, aliases, depth + 1)).collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    for f in &mut program.functions {
+        for t in f.param_types.iter_mut() {
+            *t = resolve(t, &aliases, 0);
+        }
+        f.return_type = resolve(&f.return_type, &aliases, 0);
+    }
+    for s in &mut program.structs {
+        for (_, t) in s.fields.iter_mut() {
+            *t = resolve(t, &aliases, 0);
+        }
+    }
+    for e in &mut program.enums {
+        for (_, payload) in e.variants.iter_mut() {
+            for t in payload.iter_mut() {
+                *t = resolve(t, &aliases, 0);
+            }
+        }
+    }
+}
+
+/// `let (a,b) = expr` encoded as `let __tuple_let__a,b = expr` → expand to lets + tuple_get
+pub fn desugar_tuple_lets(program: &mut Program) {
+    for f in &mut program.functions {
+        f.body = desugar_tuple_lets_stmts(&f.body);
+    }
+}
+
+fn desugar_tuple_lets_stmts(stmts: &[Stmt]) -> Vec<Stmt> {
+    let mut out = Vec::new();
+    for s in stmts {
+        match s {
+            Stmt::Let(name, expr) if name.starts_with("__tuple_let__") => {
+                let names_str = &name["__tuple_let__".len()..];
+                let names: Vec<&str> = names_str.split(',').filter(|n| !n.is_empty()).collect();
+                let tmp = format!("__tup_{}", out.len());
+                out.push(Stmt::Let(tmp.clone(), expr.clone()));
+                for (i, n) in names.iter().enumerate() {
+                    if *n == "_" {
+                        continue;
+                    }
+                    out.push(Stmt::Let(
+                        n.to_string(),
+                        Expr::Call(
+                            "tuple_get".into(),
+                            vec![Expr::Var(tmp.clone()), Expr::Int(i as i64)],
+                        ),
+                    ));
+                }
+            }
+            Stmt::Let(name, expr) if name.starts_with("__struct_let__") => {
+                // __struct_let__Player__hp:hp,name:n
+                let rest = &name["__struct_let__".len()..];
+                let (struct_name, fields_str) = rest
+                    .split_once("__")
+                    .unwrap_or((rest, ""));
+                let tmp = format!("__s_{}", out.len());
+                out.push(Stmt::Let(tmp.clone(), expr.clone()));
+                let _ = struct_name; // type checked later via field access
+                for part in fields_str.split(',').filter(|p| !p.is_empty()) {
+                    let (field, binding) = part.split_once(':').unwrap_or((part, part));
+                    if binding == "_" {
+                        continue;
+                    }
+                    out.push(Stmt::Let(
+                        binding.to_string(),
+                        Expr::Field(Box::new(Expr::Var(tmp.clone())), field.to_string()),
+                    ));
+                }
+            }
+            Stmt::If(c, a, b) => {
+                out.push(Stmt::If(
+                    c.clone(),
+                    desugar_tuple_lets_stmts(a),
+                    desugar_tuple_lets_stmts(b),
+                ));
+            }
+            Stmt::While(c, body) => {
+                out.push(Stmt::While(c.clone(), desugar_tuple_lets_stmts(body)));
+            }
+            Stmt::For {
+                var,
+                start,
+                end,
+                inclusive,
+                body,
+            } => {
+                out.push(Stmt::For {
+                    var: var.clone(),
+                    start: start.clone(),
+                    end: end.clone(),
+                    inclusive: *inclusive,
+                    body: desugar_tuple_lets_stmts(body),
+                });
+            }
+            Stmt::ForIn {
+                var,
+                index,
+                iter,
+                body,
+            } => {
+                out.push(Stmt::ForIn {
+                    var: var.clone(),
+                    index: index.clone(),
+                    iter: iter.clone(),
+                    body: desugar_tuple_lets_stmts(body),
+                });
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let arms = arms
+                    .iter()
+                    .map(|a| {
+                        let mut a = a.clone();
+                        a.body = desugar_tuple_lets_stmts(&a.body);
+                        a
+                    })
+                    .collect();
+                out.push(Stmt::Match {
+                    scrutinee: scrutinee.clone(),
+                    arms,
+                });
+            }
+            Stmt::Defer(body) => out.push(Stmt::Defer(desugar_tuple_lets_stmts(body))),
+            Stmt::IfLet {
+                pattern,
+                value,
+                yes,
+                no,
+            } => {
+                out.push(Stmt::IfLet {
+                    pattern: pattern.clone(),
+                    value: value.clone(),
+                    yes: desugar_tuple_lets_stmts(yes),
+                    no: desugar_tuple_lets_stmts(no),
+                });
+            }
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
 pub fn monomorphize(program: &mut Program) -> Result<(), String> {
     let mut templates: HashMap<String, crate::ast::Function> = HashMap::new();
     for f in &program.functions {
@@ -3105,8 +3491,9 @@ pub fn monomorphize(program: &mut Program) -> Result<(), String> {
         }
     }
     if templates.is_empty() {
-        // Still monomorphize generic structs even when no generic functions
+        // Still monomorphize generic structs/enums even when no generic functions
         monomorphize_structs(program)?;
+        monomorphize_enums(program)?;
         return Ok(());
     }
 
@@ -3186,17 +3573,56 @@ pub fn monomorphize(program: &mut Program) -> Result<(), String> {
         }
     }
 
-    // --- Generic struct monomorphization ---
+    // --- Generic struct + enum monomorphization ---
     monomorphize_structs(program)?;
+    monomorphize_enums(program)?;
     Ok(())
 }
 
 fn mangle_struct_name(name: &str, type_args: &[Type]) -> String {
     let mut parts = vec![name.to_string()];
     for t in type_args {
-        parts.push(type_name(t).replace(['[', ']', ' ', ',', '(', ')'], "_"));
+        parts.push(mangle_type_piece(t));
     }
     parts.join("__")
+}
+
+fn mangle_type_piece(t: &Type) -> String {
+    match t {
+        Type::Int => "Int".into(),
+        Type::Float => "Float".into(),
+        Type::Bool => "Bool".into(),
+        Type::Str => "Str".into(),
+        Type::Unit => "Unit".into(),
+        Type::List => "List".into(),
+        Type::ListOf(inner) => format!("List_{}", mangle_type_piece(inner)),
+        Type::Map => "Map".into(),
+        Type::MapOf(k, v) => format!("Map_{}_{}", mangle_type_piece(k), mangle_type_piece(v)),
+        Type::Struct(n) => n.clone(),
+        Type::StructApp(n, args) => {
+            let mut s = n.clone();
+            for a in args {
+                s.push('_');
+                s.push_str(&mangle_type_piece(a));
+            }
+            s
+        }
+        Type::Enum(n) => n.clone(),
+        Type::EnumApp(n, args) => {
+            let mut s = n.clone();
+            for a in args {
+                s.push('_');
+                s.push_str(&mangle_type_piece(a));
+            }
+            s
+        }
+        Type::Tuple(ts) => {
+            let inner = ts.iter().map(mangle_type_piece).collect::<Vec<_>>().join("_");
+            format!("Tup_{inner}")
+        }
+        Type::Generic(n) => n.clone(),
+        other => type_name(other).replace(['[', ']', ' ', ',', '(', ')'], "_"),
+    }
 }
 
 fn specialize_struct(tmpl: &StructDef, subst: &HashMap<String, Type>) -> StructDef {
@@ -3220,6 +3646,7 @@ fn specialize_struct(tmpl: &StructDef, subst: &HashMap<String, Type>) -> StructD
         module_path: tmpl.module_path.clone(),
         type_params: vec![],
         fields,
+        defaults: tmpl.defaults.clone(),
     }
 }
 
@@ -3238,6 +3665,27 @@ fn infer_struct_subst(
             Expr::Float(_) => Type::Float,
             Expr::Bool(_) => Type::Bool,
             Expr::Str(_) => Type::Str,
+            Expr::StructLit { name, fields: sf } => {
+                if let Some(st) = structs.get(name) {
+                    if st.type_params.is_empty() {
+                        Type::Struct(name.clone())
+                    } else {
+                        let inner = infer_struct_subst(st, sf, env, sigs, structs);
+                        let args: Vec<Type> = st
+                            .type_params
+                            .iter()
+                            .map(|p| inner.get(p).cloned().unwrap_or(Type::Unknown))
+                            .collect();
+                        if args.iter().all(|t| *t != Type::Unknown) {
+                            Type::StructApp(name.clone(), args)
+                        } else {
+                            Type::Struct(name.clone())
+                        }
+                    }
+                } else {
+                    Type::Struct(name.clone())
+                }
+            }
             _ => expr_type(fexpr, env, sigs, structs).unwrap_or(Type::Unknown),
         };
         if let Some((_, expected_raw)) = tmpl.fields.iter().find(|(f, _)| f == fname) {
@@ -3462,7 +3910,7 @@ fn rewrite_struct_lits_in_stmts(
                 rewrite_struct_lits_in_stmts(yes, templates, env, sigs, structs, needed);
                 rewrite_struct_lits_in_stmts(no, templates, env, sigs, structs, needed);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
         }
     }
 }
@@ -3506,7 +3954,7 @@ fn collect_struct_lits(stmts: &[Stmt], out: &mut Vec<(String, Vec<(String, Expr)
             }
             Stmt::Defer(body) | Stmt::IfLet { yes: body, .. } => collect_struct_lits(body, out),
             Stmt::IfLet { no, .. } => collect_struct_lits(no, out),
-            Stmt::Decl(_, _) | Stmt::Break | Stmt::Continue => {}
+            Stmt::Decl(_, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
         }
     }
 }
@@ -3669,10 +4117,1055 @@ fn monomorphize_structs(program: &mut Program) -> Result<(), String> {
         }
     }
 
-    for (_, s) in specialized {
+    for s in specialized.values() {
         if !program.structs.iter().any(|x| x.name == s.name) {
-            program.structs.push(s);
+            program.structs.push(s.clone());
         }
     }
+    // Specialize `impl Box[T]` methods onto each `Box__Int`
+    specialize_generic_impl_methods(program, &specialized)?;
+    rewrite_specialized_method_calls(program, &specialized);
     Ok(())
 }
+
+/// `Box.get(x)` where x is `Box__Int` → `Box__Int.get(x)`
+fn rewrite_specialized_method_calls(
+    program: &mut Program,
+    specialized_structs: &HashMap<String, StructDef>,
+) {
+    // template -> list of mangled specializations
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for mangled in specialized_structs.keys() {
+        let tmpl = mangled.split("__").next().unwrap_or(mangled);
+        map.entry(tmpl.to_string()).or_default().push(mangled.clone());
+    }
+    if map.is_empty() {
+        return;
+    }
+    for f in &mut program.functions {
+        rewrite_spec_calls_stmts(&mut f.body, &map);
+    }
+}
+
+fn rewrite_spec_calls_stmts(stmts: &mut [Stmt], map: &HashMap<String, Vec<String>>) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_spec_calls_expr(e, map);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_spec_calls_expr(object, map);
+                rewrite_spec_calls_expr(value, map);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_spec_calls_expr(c, map);
+                rewrite_spec_calls_stmts(a, map);
+                rewrite_spec_calls_stmts(b, map);
+            }
+            Stmt::While(c, body) => {
+                rewrite_spec_calls_expr(c, map);
+                rewrite_spec_calls_stmts(body, map);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_spec_calls_expr(start, map);
+                rewrite_spec_calls_expr(end, map);
+                rewrite_spec_calls_stmts(body, map);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_spec_calls_expr(iter, map);
+                rewrite_spec_calls_stmts(body, map);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_spec_calls_expr(scrutinee, map);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_spec_calls_expr(g, map);
+                    }
+                    rewrite_spec_calls_stmts(&mut arm.body, map);
+                }
+            }
+            Stmt::Defer(body) => rewrite_spec_calls_stmts(body, map),
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_spec_calls_expr(value, map);
+                rewrite_spec_calls_stmts(yes, map);
+                rewrite_spec_calls_stmts(no, map);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_spec_calls_expr(e: &mut Expr, map: &HashMap<String, Vec<String>>) {
+    match e {
+        Expr::Call(name, args) => {
+            for a in args.iter_mut() {
+                rewrite_spec_calls_expr(a, map);
+            }
+            // Box.get / Box.set__Int → Box__Int.get / Box__Int.set
+            if let Some((base, rest)) = name.split_once('.') {
+                if let Some(mangles) = map.get(base) {
+                    // strip function-mono suffix from method: set__Int -> set
+                    let method = rest.split("__").next().unwrap_or(rest);
+                    if let Some(Expr::StructLit { name: sn, .. }) = args.first() {
+                        if sn.starts_with(&format!("{base}__")) && mangles.iter().any(|m| m == sn) {
+                            *name = format!("{sn}.{method}");
+                        }
+                    } else if mangles.len() == 1 {
+                        *name = format!("{}.{method}", mangles[0]);
+                    }
+                }
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            rewrite_spec_calls_expr(c, map);
+            for a in args {
+                rewrite_spec_calls_expr(a, map);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_spec_calls_expr(receiver, map);
+            for a in args {
+                rewrite_spec_calls_expr(a, map);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_spec_calls_expr(a, map);
+            rewrite_spec_calls_expr(b, map);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => rewrite_spec_calls_expr(a, map),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_spec_calls_expr(cond, map);
+            rewrite_spec_calls_expr(then_branch, map);
+            rewrite_spec_calls_expr(else_branch, map);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_spec_calls_expr(scrutinee, map);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_spec_calls_expr(g, map);
+                }
+                rewrite_spec_calls_expr(&mut a.value, map);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, x) in fields {
+                rewrite_spec_calls_expr(x, map);
+            }
+        }
+        Expr::Tuple(items) | Expr::VariantLit { args: items, .. } => {
+            for x in items {
+                rewrite_spec_calls_expr(x, map);
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_spec_calls_stmts(body, map),
+        _ => {}
+    }
+}
+
+
+fn rewrite_struct_name_in_stmts(stmts: &mut [Stmt], from: &str, to: &str) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_struct_name_in_expr(e, from, to);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_struct_name_in_expr(object, from, to);
+                rewrite_struct_name_in_expr(value, from, to);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_struct_name_in_expr(c, from, to);
+                rewrite_struct_name_in_stmts(a, from, to);
+                rewrite_struct_name_in_stmts(b, from, to);
+            }
+            Stmt::While(c, body) => {
+                rewrite_struct_name_in_expr(c, from, to);
+                rewrite_struct_name_in_stmts(body, from, to);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_struct_name_in_expr(start, from, to);
+                rewrite_struct_name_in_expr(end, from, to);
+                rewrite_struct_name_in_stmts(body, from, to);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_struct_name_in_expr(iter, from, to);
+                rewrite_struct_name_in_stmts(body, from, to);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_struct_name_in_expr(scrutinee, from, to);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_struct_name_in_expr(g, from, to);
+                    }
+                    rewrite_struct_name_in_stmts(&mut arm.body, from, to);
+                }
+            }
+            Stmt::Defer(body) => rewrite_struct_name_in_stmts(body, from, to),
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_struct_name_in_expr(value, from, to);
+                rewrite_struct_name_in_stmts(yes, from, to);
+                rewrite_struct_name_in_stmts(no, from, to);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_struct_name_in_expr(e: &mut Expr, from: &str, to: &str) {
+    match e {
+        Expr::StructLit { name, fields } => {
+            if name == from {
+                *name = to.to_string();
+            }
+            for (_, x) in fields {
+                rewrite_struct_name_in_expr(x, from, to);
+            }
+        }
+        Expr::Call(_, args) | Expr::VariantLit { args, .. } => {
+            for a in args {
+                rewrite_struct_name_in_expr(a, from, to);
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            rewrite_struct_name_in_expr(c, from, to);
+            for a in args {
+                rewrite_struct_name_in_expr(a, from, to);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_struct_name_in_expr(receiver, from, to);
+            for a in args {
+                rewrite_struct_name_in_expr(a, from, to);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_struct_name_in_expr(a, from, to);
+            rewrite_struct_name_in_expr(b, from, to);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => rewrite_struct_name_in_expr(a, from, to),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_struct_name_in_expr(cond, from, to);
+            rewrite_struct_name_in_expr(then_branch, from, to);
+            rewrite_struct_name_in_expr(else_branch, from, to);
+        }
+        Expr::Tuple(items) => {
+            for x in items {
+                rewrite_struct_name_in_expr(x, from, to);
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_struct_name_in_stmts(body, from, to),
+        _ => {}
+    }
+}
+
+fn specialize_generic_impl_methods(
+    program: &mut Program,
+    specialized_structs: &HashMap<String, StructDef>,
+) -> Result<(), String> {
+    // Map template struct name -> list of (mangled name, subst from type_params)
+    // Rebuild subst from mangled name is hard; track from specialized struct fields vs template.
+    let templates: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .filter(|s| !s.type_params.is_empty())
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
+
+    let mut new_methods: Vec<crate::ast::Function> = Vec::new();
+
+    for (mangled, spec) in specialized_structs {
+        // Recover template name: "Box__Int" -> prefix before __
+        let tmpl_name = mangled.split("__").next().unwrap_or(mangled);
+        let Some(tmpl) = templates.get(tmpl_name) else {
+            // try full scan: any template where specialize would match
+            continue;
+        };
+        // Build subst by matching field types Generic -> concrete on spec
+        let mut subst: HashMap<String, Type> = HashMap::new();
+        for ((_, tt), (_, st)) in tmpl.fields.iter().zip(spec.fields.iter()) {
+            let tt = normalize_type(tt, &tmpl.type_params);
+            if let Type::Generic(g) = tt {
+                if *st != Type::Unknown {
+                    subst.insert(g, st.clone());
+                }
+            }
+        }
+        // Also from type_params order vs mangled suffix types (fallback)
+        if subst.len() < tmpl.type_params.len() {
+            // mangled = Name__Type1__Type2
+            let parts: Vec<&str> = mangled.split("__").collect();
+            if parts.len() == tmpl.type_params.len() + 1 {
+                for (i, p) in tmpl.type_params.iter().enumerate() {
+                    let ty = match parts[i + 1] {
+                        "Int" => Type::Int,
+                        "Float" => Type::Float,
+                        "Bool" => Type::Bool,
+                        "String" | "Str" => Type::Str,
+                        other => Type::Struct(other.to_string()),
+                    };
+                    subst.entry(p.clone()).or_insert(ty);
+                }
+            }
+        }
+        if subst.is_empty() {
+            continue;
+        }
+
+        // Find methods named `Template.method`
+        let prefix = format!("{tmpl_name}.");
+        for f in &program.functions {
+            if !f.name.starts_with(&prefix) {
+                continue;
+            }
+            if f.type_params.is_empty() {
+                continue;
+            }
+            let method_tail = &f.name[prefix.len()..];
+            let new_name = format!("{mangled}.{method_tail}");
+            if program.functions.iter().any(|x| x.name == new_name)
+                || new_methods.iter().any(|x| x.name == new_name)
+            {
+                continue;
+            }
+            let mut spec_fn = f.clone();
+            spec_fn.name = new_name;
+            spec_fn.type_params.clear();
+            spec_fn.trait_bounds.clear();
+            for t in spec_fn.param_types.iter_mut() {
+                let nt = apply_subst_type(&normalize_type(t, &f.type_params), &subst);
+                *t = if matches!(&nt, Type::Struct(n) if n == tmpl_name)
+                    || matches!(&nt, Type::StructApp(n, _) if n == tmpl_name)
+                {
+                    Type::Struct(mangled.clone())
+                } else {
+                    nt
+                };
+            }
+            let rt = apply_subst_type(&normalize_type(&f.return_type, &f.type_params), &subst);
+            spec_fn.return_type = if matches!(&rt, Type::Struct(n) if n == tmpl_name)
+                || matches!(&rt, Type::StructApp(n, _) if n == tmpl_name)
+            {
+                Type::Struct(mangled.clone())
+            } else {
+                rt
+            };
+            rewrite_types_in_stmts(&mut spec_fn.body, &subst);
+            // Rewrite nested StructLit template name → mangled
+            rewrite_struct_name_in_stmts(&mut spec_fn.body, tmpl_name, mangled);
+            new_methods.push(spec_fn);
+        }
+    }
+
+    program.functions.extend(new_methods);
+    Ok(())
+}
+
+
+fn mangle_enum_name(name: &str, type_args: &[Type]) -> String {
+    let mut parts = vec![name.to_string()];
+    for t in type_args {
+        parts.push(mangle_type_piece(t));
+    }
+    parts.join("__")
+}
+
+fn specialize_enum(tmpl: &EnumDef, subst: &HashMap<String, Type>) -> EnumDef {
+    let type_args: Vec<Type> = tmpl
+        .type_params
+        .iter()
+        .map(|p| subst.get(p).cloned().unwrap_or(Type::Unknown))
+        .collect();
+    let name = mangle_enum_name(&tmpl.name, &type_args);
+    let variants = tmpl
+        .variants
+        .iter()
+        .map(|(vn, payload)| {
+            let payload: Vec<Type> = payload
+                .iter()
+                .map(|t| {
+                    let t = normalize_type(t, &tmpl.type_params);
+                    apply_subst_type(&t, subst)
+                })
+                .collect();
+            (vn.clone(), payload)
+        })
+        .collect();
+    EnumDef {
+        name,
+        visibility: tmpl.visibility,
+        module_path: tmpl.module_path.clone(),
+        type_params: vec![],
+        variants,
+    }
+}
+
+fn infer_enum_subst_from_args(
+    tmpl: &EnumDef,
+    variant: &str,
+    args: &[Expr],
+) -> HashMap<String, Type> {
+    let mut subst = HashMap::new();
+    let Some((_, payload)) = tmpl.variants.iter().find(|(n, _)| n == variant) else {
+        return subst;
+    };
+    for (arg, t_raw) in args.iter().zip(payload.iter()) {
+        let got = match arg {
+            Expr::Int(_) => Type::Int,
+            Expr::Float(_) => Type::Float,
+            Expr::Bool(_) => Type::Bool,
+            Expr::Str(_) => Type::Str,
+            _ => Type::Unknown,
+        };
+        let expected = normalize_type(t_raw, &tmpl.type_params);
+        let expected = match &expected {
+            Type::Struct(n) if tmpl.type_params.iter().any(|p| p == n) => Type::Generic(n.clone()),
+            other => other.clone(),
+        };
+        if let Type::Generic(g) = expected {
+            if got != Type::Unknown {
+                subst.entry(g).or_insert(got);
+            }
+        }
+    }
+    subst
+}
+
+fn rewrite_enum_names_in_pattern(
+    p: &mut Pattern,
+    rename: &HashMap<String, String>,
+) {
+    match p {
+        Pattern::Variant { enum_name, .. } => {
+            if let Some(en) = enum_name {
+                if let Some(m) = rename.get(en) {
+                    *en = m.clone();
+                }
+            }
+        }
+        Pattern::Or(ps) => {
+            for p in ps {
+                rewrite_enum_names_in_pattern(p, rename);
+            }
+        }
+        Pattern::Tuple(ps) => {
+            for p in ps {
+                rewrite_enum_names_in_pattern(p, rename);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_variant_lits_in_expr(
+    e: &mut Expr,
+    templates: &HashMap<String, EnumDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+    rename: &mut HashMap<String, String>, // original template uses still need per-site mangled
+) {
+    match e {
+        Expr::VariantLit {
+            enum_name,
+            variant,
+            args,
+        } => {
+            for a in args.iter_mut() {
+                rewrite_variant_lits_in_expr(a, templates, needed, rename);
+            }
+            if let Some(tmpl) = templates.get(enum_name) {
+                if !tmpl.type_params.is_empty() {
+                    let subst = infer_enum_subst_from_args(tmpl, variant, args);
+                    if tmpl
+                        .type_params
+                        .iter()
+                        .all(|p| matches!(subst.get(p), Some(t) if *t != Type::Unknown))
+                    {
+                        let type_args: Vec<Type> = tmpl
+                            .type_params
+                            .iter()
+                            .map(|p| subst[p].clone())
+                            .collect();
+                        let mangled = mangle_enum_name(enum_name, &type_args);
+                        needed.insert(mangled.clone(), (enum_name.clone(), subst));
+                        *enum_name = mangled;
+                    }
+                }
+            }
+        }
+        Expr::Call(_, args) | Expr::CallExpr(_, args) => {
+            for a in args {
+                rewrite_variant_lits_in_expr(a, templates, needed, rename);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_variant_lits_in_expr(receiver, templates, needed, rename);
+            for a in args {
+                rewrite_variant_lits_in_expr(a, templates, needed, rename);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_variant_lits_in_expr(a, templates, needed, rename);
+            rewrite_variant_lits_in_expr(b, templates, needed, rename);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => {
+            rewrite_variant_lits_in_expr(a, templates, needed, rename);
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_variant_lits_in_expr(cond, templates, needed, rename);
+            rewrite_variant_lits_in_expr(then_branch, templates, needed, rename);
+            rewrite_variant_lits_in_expr(else_branch, templates, needed, rename);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_variant_lits_in_expr(scrutinee, templates, needed, rename);
+            for a in arms {
+                rewrite_enum_names_in_pattern(&mut a.pattern, rename);
+                if let Some(g) = &mut a.guard {
+                    rewrite_variant_lits_in_expr(g, templates, needed, rename);
+                }
+                rewrite_variant_lits_in_expr(&mut a.value, templates, needed, rename);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, x) in fields {
+                rewrite_variant_lits_in_expr(x, templates, needed, rename);
+            }
+        }
+        Expr::Tuple(items) => {
+            for x in items {
+                rewrite_variant_lits_in_expr(x, templates, needed, rename);
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_variant_lits_in_stmts(body, templates, needed, rename),
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(e) = p {
+                    rewrite_variant_lits_in_expr(e, templates, needed, rename);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_variant_lits_in_stmts(
+    stmts: &mut [Stmt],
+    templates: &HashMap<String, EnumDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+    rename: &mut HashMap<String, String>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_variant_lits_in_expr(e, templates, needed, rename);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_variant_lits_in_expr(object, templates, needed, rename);
+                rewrite_variant_lits_in_expr(value, templates, needed, rename);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_variant_lits_in_expr(c, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(a, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(b, templates, needed, rename);
+            }
+            Stmt::While(c, body) => {
+                rewrite_variant_lits_in_expr(c, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(body, templates, needed, rename);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_variant_lits_in_expr(start, templates, needed, rename);
+                rewrite_variant_lits_in_expr(end, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(body, templates, needed, rename);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_variant_lits_in_expr(iter, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(body, templates, needed, rename);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_variant_lits_in_expr(scrutinee, templates, needed, rename);
+                for arm in arms {
+                    // Pattern enum names: rewrite after we know mangled from scrutinee site
+                    // Simple approach: if pattern has enum_name matching a template and we
+                    // already specialized once, map template -> single mangled if only one.
+                    if let Pattern::Variant {
+                        enum_name: Some(en),
+                        ..
+                    } = &mut arm.pattern
+                    {
+                        if let Some(m) = rename.get(en) {
+                            *en = m.clone();
+                        }
+                    }
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_variant_lits_in_expr(g, templates, needed, rename);
+                    }
+                    rewrite_variant_lits_in_stmts(&mut arm.body, templates, needed, rename);
+                }
+            }
+            Stmt::Defer(body) => rewrite_variant_lits_in_stmts(body, templates, needed, rename),
+            Stmt::IfLet { value, yes, no, pattern, .. } => {
+                rewrite_variant_lits_in_expr(value, templates, needed, rename);
+                rewrite_enum_names_in_pattern(pattern, rename);
+                rewrite_variant_lits_in_stmts(yes, templates, needed, rename);
+                rewrite_variant_lits_in_stmts(no, templates, needed, rename);
+            }
+            Stmt::Decl(_, t) => {
+                // EnumApp in decl types
+                if let Type::EnumApp(name, args) = t {
+                    // handled in signature pass
+                    let _ = (name, args);
+                }
+            }
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
+        }
+    }
+}
+
+fn rewrite_type_enum_apps(
+    t: &mut Type,
+    templates: &HashMap<String, EnumDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+) {
+    match t {
+        Type::EnumApp(name, args) => {
+            if let Some(tmpl) = templates.get(name) {
+                if !tmpl.type_params.is_empty()
+                    && args.len() == tmpl.type_params.len()
+                    && args.iter().all(|a| *a != Type::Unknown)
+                {
+                    let mut subst = HashMap::new();
+                    for (p, a) in tmpl.type_params.iter().zip(args.iter()) {
+                        subst.insert(p.clone(), a.clone());
+                    }
+                    let mangled = mangle_enum_name(name, args);
+                    needed.insert(mangled.clone(), (name.clone(), subst));
+                    *t = Type::Enum(mangled);
+                    return;
+                }
+            }
+            for a in args.iter_mut() {
+                rewrite_type_enum_apps(a, templates, needed);
+            }
+        }
+        Type::ListOf(inner) | Type::Ref(inner) | Type::MutRef(inner) => {
+            rewrite_type_enum_apps(inner, templates, needed);
+        }
+        Type::MapOf(k, v) => {
+            rewrite_type_enum_apps(k, templates, needed);
+            rewrite_type_enum_apps(v, templates, needed);
+        }
+        Type::Tuple(ts) | Type::StructApp(_, ts) => {
+            for x in ts {
+                rewrite_type_enum_apps(x, templates, needed);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Specialize generic enums at concrete VariantLit / EnumApp sites.
+pub fn monomorphize_enums(program: &mut Program) -> Result<(), String> {
+    // Ensure prelude generic Option / Result exist for specialization
+    if !program.enums.iter().any(|e| e.name == "Option") {
+        program.enums.push(EnumDef {
+            name: "Option".into(),
+            visibility: Visibility::Public,
+            module_path: vec![],
+            type_params: vec!["T".into()],
+            variants: vec![
+                ("None".into(), vec![]),
+                ("Some".into(), vec![Type::Generic("T".into())]),
+            ],
+        });
+    }
+    if !program.enums.iter().any(|e| e.name == "Result") {
+        program.enums.push(EnumDef {
+            name: "Result".into(),
+            visibility: Visibility::Public,
+            module_path: vec![],
+            type_params: vec!["T".into(), "E".into()],
+            variants: vec![
+                ("Ok".into(), vec![Type::Generic("T".into())]),
+                ("Err".into(), vec![Type::Generic("E".into())]),
+            ],
+        });
+    }
+
+    let mut templates: HashMap<String, EnumDef> = HashMap::new();
+    for e in &program.enums {
+        if !e.type_params.is_empty() {
+            templates.insert(e.name.clone(), e.clone());
+        }
+    }
+    if templates.is_empty() {
+        return Ok(());
+    }
+
+    let mut specialized: HashMap<String, EnumDef> = HashMap::new();
+    let mut rename: HashMap<String, String> = HashMap::new(); // template -> last mangled (match patterns)
+
+    for f in &mut program.functions {
+        let mut needed: HashMap<String, (String, HashMap<String, Type>)> = HashMap::new();
+        for t in f.param_types.iter_mut() {
+            rewrite_type_enum_apps(t, &templates, &mut needed);
+        }
+        rewrite_type_enum_apps(&mut f.return_type, &templates, &mut needed);
+        rewrite_variant_lits_in_stmts(&mut f.body, &templates, &mut needed, &mut rename);
+
+        for (mangled, (tmpl_name, subst)) in needed {
+            rename.insert(tmpl_name.clone(), mangled.clone());
+            specialized
+                .entry(mangled.clone())
+                .or_insert_with(|| specialize_enum(templates.get(&tmpl_name).unwrap(), &subst));
+        }
+
+        // Second pass: rewrite match patterns using rename map
+        rewrite_variant_lits_in_stmts(&mut f.body, &templates, &mut HashMap::new(), &mut rename);
+    }
+
+    for e in specialized.values() {
+        if !program.enums.iter().any(|x| x.name == e.name) {
+            program.enums.push(e.clone());
+        }
+    }
+    specialize_generic_enum_impl_methods(program, &specialized)?;
+    rewrite_specialized_enum_method_calls(program, &specialized);
+    Ok(())
+}
+
+fn specialize_generic_enum_impl_methods(
+    program: &mut Program,
+    specialized_enums: &HashMap<String, EnumDef>,
+) -> Result<(), String> {
+    let templates: HashMap<String, EnumDef> = program
+        .enums
+        .iter()
+        .filter(|e| !e.type_params.is_empty())
+        .map(|e| (e.name.clone(), e.clone()))
+        .collect();
+
+    let mut new_methods: Vec<crate::ast::Function> = Vec::new();
+    for (mangled, _spec) in specialized_enums {
+        let tmpl_name = mangled.split("__").next().unwrap_or(mangled);
+        let Some(tmpl) = templates.get(tmpl_name) else {
+            continue;
+        };
+        let mut subst = HashMap::new();
+        let parts: Vec<&str> = mangled.split("__").collect();
+        if parts.len() == tmpl.type_params.len() + 1 {
+            for (i, p) in tmpl.type_params.iter().enumerate() {
+                let ty = match parts[i + 1] {
+                    "Int" => Type::Int,
+                    "Float" => Type::Float,
+                    "Bool" => Type::Bool,
+                    "Str" | "String" => Type::Str,
+                    other => Type::Struct(other.to_string()),
+                };
+                subst.insert(p.clone(), ty);
+            }
+        }
+        if subst.is_empty() {
+            continue;
+        }
+        let prefix = format!("{tmpl_name}.");
+        for f in &program.functions {
+            if !f.name.starts_with(&prefix) || f.type_params.is_empty() {
+                continue;
+            }
+            let method_tail = &f.name[prefix.len()..];
+            let new_name = format!("{mangled}.{method_tail}");
+            if program.functions.iter().any(|x| x.name == new_name)
+                || new_methods.iter().any(|x| x.name == new_name)
+            {
+                continue;
+            }
+            let mut spec_fn = f.clone();
+            spec_fn.name = new_name;
+            spec_fn.type_params.clear();
+            spec_fn.trait_bounds.clear();
+            for t in spec_fn.param_types.iter_mut() {
+                let nt = apply_subst_type(&normalize_type(t, &f.type_params), &subst);
+                *t = if matches!(&nt, Type::Struct(n) | Type::Enum(n) if n == tmpl_name)
+                    || matches!(&nt, Type::StructApp(n, _) | Type::EnumApp(n, _) if n == tmpl_name)
+                {
+                    Type::Enum(mangled.clone())
+                } else {
+                    nt
+                };
+            }
+            let rt = apply_subst_type(&normalize_type(&f.return_type, &f.type_params), &subst);
+            spec_fn.return_type = if matches!(&rt, Type::Struct(n) | Type::Enum(n) if n == tmpl_name)
+            {
+                Type::Enum(mangled.clone())
+            } else {
+                rt
+            };
+            rewrite_types_in_stmts(&mut spec_fn.body, &subst);
+            rewrite_enum_name_in_stmts(&mut spec_fn.body, tmpl_name, mangled);
+            new_methods.push(spec_fn);
+        }
+    }
+    program.functions.extend(new_methods);
+    Ok(())
+}
+
+fn rewrite_enum_name_in_stmts(stmts: &mut [Stmt], from: &str, to: &str) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_enum_name_in_expr(e, from, to);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_enum_name_in_expr(c, from, to);
+                rewrite_enum_name_in_stmts(a, from, to);
+                rewrite_enum_name_in_stmts(b, from, to);
+            }
+            Stmt::While(c, body) => {
+                rewrite_enum_name_in_expr(c, from, to);
+                rewrite_enum_name_in_stmts(body, from, to);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_enum_name_in_expr(start, from, to);
+                rewrite_enum_name_in_expr(end, from, to);
+                rewrite_enum_name_in_stmts(body, from, to);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_enum_name_in_expr(iter, from, to);
+                rewrite_enum_name_in_stmts(body, from, to);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_enum_name_in_expr(scrutinee, from, to);
+                for arm in arms {
+                    rewrite_enum_names_in_pattern(&mut arm.pattern, &{
+                        let mut m = HashMap::new();
+                        m.insert(from.to_string(), to.to_string());
+                        m
+                    });
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_enum_name_in_expr(g, from, to);
+                    }
+                    rewrite_enum_name_in_stmts(&mut arm.body, from, to);
+                }
+            }
+            Stmt::Defer(body) => rewrite_enum_name_in_stmts(body, from, to),
+            Stmt::IfLet { value, yes, no, pattern, .. } => {
+                rewrite_enum_name_in_expr(value, from, to);
+                rewrite_enum_names_in_pattern(pattern, &{
+                    let mut m = HashMap::new();
+                    m.insert(from.to_string(), to.to_string());
+                    m
+                });
+                rewrite_enum_name_in_stmts(yes, from, to);
+                rewrite_enum_name_in_stmts(no, from, to);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rewrite_enum_name_in_expr(e: &mut Expr, from: &str, to: &str) {
+    match e {
+        Expr::VariantLit { enum_name, args, .. } => {
+            if enum_name == from {
+                *enum_name = to.to_string();
+            }
+            for a in args {
+                rewrite_enum_name_in_expr(a, from, to);
+            }
+        }
+        Expr::Call(_, args) => {
+            for a in args {
+                rewrite_enum_name_in_expr(a, from, to);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_enum_name_in_expr(a, from, to);
+            rewrite_enum_name_in_expr(b, from, to);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => rewrite_enum_name_in_expr(a, from, to),
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_enum_name_in_expr(scrutinee, from, to);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_enum_name_in_expr(g, from, to);
+                }
+                rewrite_enum_name_in_expr(&mut a.value, from, to);
+            }
+        }
+        Expr::Tuple(items) => {
+            for x in items {
+                rewrite_enum_name_in_expr(x, from, to);
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_enum_name_in_stmts(body, from, to),
+        _ => {}
+    }
+}
+
+fn rewrite_specialized_enum_method_calls(
+    program: &mut Program,
+    specialized_enums: &HashMap<String, EnumDef>,
+) {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for mangled in specialized_enums.keys() {
+        let tmpl = mangled.split("__").next().unwrap_or(mangled);
+        map.entry(tmpl.to_string()).or_default().push(mangled.clone());
+    }
+    if map.is_empty() {
+        return;
+    }
+    for f in &mut program.functions {
+        rewrite_spec_calls_stmts(&mut f.body, &map);
+    }
+}
+
+/// Convert `Enum.Variant(args)` Call nodes into VariantLit (no typecheck).
+/// Must run after check_program (ENUMS populated) and before monomorphize_enums.
+pub fn desugar_enum_variant_calls(program: &mut Program) {
+    for f in &mut program.functions {
+        desugar_enum_calls_stmts(&mut f.body);
+    }
+}
+
+fn desugar_enum_calls_stmts(stmts: &mut [Stmt]) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                desugar_enum_calls_expr(e);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                desugar_enum_calls_expr(object);
+                desugar_enum_calls_expr(value);
+            }
+            Stmt::If(c, a, b) => {
+                desugar_enum_calls_expr(c);
+                desugar_enum_calls_stmts(a);
+                desugar_enum_calls_stmts(b);
+            }
+            Stmt::While(c, body) => {
+                desugar_enum_calls_expr(c);
+                desugar_enum_calls_stmts(body);
+            }
+            Stmt::For { start, end, body, .. } => {
+                desugar_enum_calls_expr(start);
+                desugar_enum_calls_expr(end);
+                desugar_enum_calls_stmts(body);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                desugar_enum_calls_expr(iter);
+                desugar_enum_calls_stmts(body);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                desugar_enum_calls_expr(scrutinee);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        desugar_enum_calls_expr(g);
+                    }
+                    desugar_enum_calls_stmts(&mut arm.body);
+                }
+            }
+            Stmt::Defer(body) => desugar_enum_calls_stmts(body),
+            Stmt::IfLet { value, yes, no, .. } => {
+                desugar_enum_calls_expr(value);
+                desugar_enum_calls_stmts(yes);
+                desugar_enum_calls_stmts(no);
+            }
+            Stmt::Decl(_, _) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Labeled(_, _) => {}
+        }
+    }
+}
+
+fn desugar_enum_calls_expr(e: &mut Expr) {
+    match e {
+        Expr::Call(name, args) => {
+            for a in args.iter_mut() {
+                desugar_enum_calls_expr(a);
+            }
+            if let Some((base, variant)) = name.split_once('.') {
+                // Only real variants — not methods like `Option.unwrap`
+                let is_variant = with_enums(|enums| {
+                    enums.get(base).map(|def| {
+                        def.variants.iter().any(|(n, _)| n == variant)
+                    }).unwrap_or(false)
+                });
+                if is_variant {
+                    *e = Expr::VariantLit {
+                        enum_name: base.to_string(),
+                        variant: variant.to_string(),
+                        args: args.clone(),
+                    };
+                }
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            desugar_enum_calls_expr(c);
+            for a in args {
+                desugar_enum_calls_expr(a);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            desugar_enum_calls_expr(receiver);
+            for a in args {
+                desugar_enum_calls_expr(a);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            desugar_enum_calls_expr(a);
+            desugar_enum_calls_expr(b);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => desugar_enum_calls_expr(a),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            desugar_enum_calls_expr(cond);
+            desugar_enum_calls_expr(then_branch);
+            desugar_enum_calls_expr(else_branch);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            desugar_enum_calls_expr(scrutinee);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    desugar_enum_calls_expr(g);
+                }
+                desugar_enum_calls_expr(&mut a.value);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, x) in fields {
+                desugar_enum_calls_expr(x);
+            }
+        }
+        Expr::Tuple(items) => {
+            for x in items {
+                desugar_enum_calls_expr(x);
+            }
+        }
+        Expr::VariantLit { args, .. } => {
+            for a in args {
+                desugar_enum_calls_expr(a);
+            }
+        }
+        Expr::Lambda { body, .. } => desugar_enum_calls_stmts(body),
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(x) = p {
+                    desugar_enum_calls_expr(x);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+

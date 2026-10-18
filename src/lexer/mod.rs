@@ -4,7 +4,7 @@
 pub enum Token {
     // Keywords
     Fn, Let, If, Else, While, For, In, Return, Break, Continue,
-    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where, Const, Use, Defer, Loop,
+    True, False, Mut, Import, Struct, Match, Mod, Extern, Impl, Enum, Pub, Trait, Where, Const, Use, Defer, Loop, Type,
     // Literals & identifiers
     Ident(String), Int(i64), Float(f64), Str(String), Underscore,
     // Operators
@@ -77,7 +77,7 @@ pub fn lex_spanned(src: &str) -> Result<Vec<SpannedToken>, String> {
                 "else" => Token::Else, "while" => Token::While, "for" => Token::For,
                 "in" => Token::In, "return" => Token::Return, "break" => Token::Break,
                 "continue" => Token::Continue, "true" => Token::True, "false" => Token::False,
-                "mut" => Token::Mut, "import" => Token::Import, "struct" => Token::Struct,
+                "mut" => Token::Mut, "import" => Token::Import, "struct" => Token::Struct, "type" => Token::Type,
                 "match" => Token::Match, "mod" => Token::Mod, "extern" => Token::Extern, "impl" => Token::Impl, "enum" => Token::Enum, "pub" => Token::Pub, "trait" => Token::Trait, "where" => Token::Where, "const" => Token::Const, "use" => Token::Use, "defer" => Token::Defer, "loop" => Token::Loop,
                 _ if word == "_" => Token::Underscore,
                 _ => Token::Ident(word),

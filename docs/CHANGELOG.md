@@ -1,5 +1,140 @@
 # Changelog
 
+## [2.24.0] — 2026-10-18 — Phase A start (sandbox + SNPBC2)
+
+### Production Phase A
+- **Sandbox**: `allow_fs` / `allow_net` via `set_sandbox`, `--sandbox`, `SNP_SANDBOX=1`
+- FS builtins blocked when sandbox disables FS
+- **SNPBC2** artifact header (`version`, `funcs`, fn list) + `inspect_artifact`
+- `build_artifact` uses full desugar/mono pipeline
+- `docs/PHASE_A.md`
+
+# Changelog
+
+## [2.23.0] — 2026-10-18 — JSON objects + FS expand
+
+### Added / improved
+- `json_parse` supports objects `{...}` → Map
+- `json_get(map, key)`
+- Float in JSON stringify/parse
+- `fs_read_lines` / `fs_append_text` / `fs_remove`
+
+### Example
+- `examples/v43_json_fs.snp`
+
+# Changelog
+
+## [2.22.0] — 2026-10-18 — Result + ? polish
+
+### Improved
+- `?` accepts `Result` and monomorphized `Result__…`
+- Clearer type / runtime errors for invalid `?` use
+- Err propagates out of the current function; Ok unwraps payload
+
+### Example
+- `examples/v42_result_try.snp`
+
+# Changelog
+
+## [2.21.0] — 2026-10-18 — loop + break labels
+
+### Added
+- `loop { ... }` (while true)
+- Labeled loops: `outer: loop { ... }`
+- `break outer` / `continue outer` jump to labeled loop
+- Nested loop stack for correct label resolution
+
+### Example
+- `examples/v41_loop_labels.snp`
+
+# Changelog
+
+## [2.20.0] — 2026-10-18 — range patterns in match
+
+### Added
+- `1..=10` inclusive and `1..10` exclusive patterns in `match`
+- Runtime `__in_range` helper + MIR/VM support
+
+### Example
+- `examples/v40_range_patterns.snp`
+
+# Changelog
+
+## [2.19.0] — 2026-10-18 — struct destructure, enum impl, exhaustiveness
+
+### Added
+- `let Player { hp, atk: a } = p` struct destructuring
+- `impl Option-like[T] { ... }` method specialization for monomorphized enums
+- Stronger match exhaustiveness (prelude enums included)
+
+### Example
+- `examples/v39_destructure_enum_impl.snp`
+
+# Changelog
+
+## [2.18.0] — 2026-10-18 — defaults + stdlib polish
+
+### Added
+- Struct field defaults: `hp: Int = 100`
+- Partial struct lits fill missing fields from defaults
+- `list_first` / `list_last` / `clamp(x, lo, hi)`
+
+### Example
+- `examples/v38_defaults_stdlib.snp`
+
+# Changelog
+
+## [2.17.0] — 2026-10-18 — type aliases + tuple let
+
+### Added
+- `type Name = Target` and `type Id[T] = T`
+- `let (a, b) = pair` desugars to `tuple_get`
+- Clearer generic type-parameter mismatch help text
+
+### Example
+- `examples/v37_alias_tuple.snp`
+
+# Changelog
+
+## [2.16.0] — 2026-10-18 — nested generics + prelude Option[T]
+
+### Added
+- Prelude **`Option[T]`** / **`Result[T, E]`** (generic)
+- Nested struct inference: `Wrap { inner: Box { value: 1 } }` → `Wrap__Box_Int`
+- Stable nested type mangling (`List_Int`, `Box_Int`, …)
+- Prelude enums injected for monomorphization when missing
+
+### Example
+- `examples/v36_nested_prelude.snp`
+
+# Changelog
+
+## [2.15.0] — 2026-10-18 — generic impl methods
+
+### Added
+- `impl Box[T] { fn get(self) -> T { ... } }`
+- Impl type params merge into methods
+- On struct monomorphize, methods specialized to `Box__Int.get`
+- `Self` in generic impl still rewrites to impl type
+
+### Example
+- `examples/v35_generic_impl.snp`
+
+# Changelog
+
+## [2.14.0] — 2026-10-18 — generic enum monomorphization
+
+### Compiler
+- **`monomorphize_enums`**: `Option2.Some(40)` → specialized `Option2__Int`
+- VariantLit + match pattern enum names rewritten
+- `EnumApp` in signatures rewritten to concrete `Enum`
+- Wired after struct monomorphization
+
+### Example
+- `examples/v34_enum_mono.snp`
+
+# Changelog
+
 ## [2.13.0] — 2026-10-18 — generic struct monomorphization
 
 ### Compiler

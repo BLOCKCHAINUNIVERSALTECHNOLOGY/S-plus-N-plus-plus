@@ -216,6 +216,12 @@ pub enum Pattern {
     Or(Vec<Pattern>),
     /// `(a, b)` tuple pattern
     Tuple(Vec<Pattern>),
+    /// `1..10` or `1..=10` integer range pattern
+    Range {
+        start: i64,
+        end: i64,
+        inclusive: bool,
+    },
 }
 
 /// Enum definition: `enum Option { None, Some(Int) }`
@@ -275,8 +281,12 @@ pub enum Stmt {
         yes: Vec<Stmt>,
         no: Vec<Stmt>,
     },
-    Break,
-    Continue,
+    /// `break` or `break label`
+    Break(Option<String>),
+    /// `continue` or `continue label`
+    Continue(Option<String>),
+    /// `label: while/for/loop ...`
+    Labeled(String, Box<Stmt>),
     /// `const NAME = expr;` (compile-time literal preferred)
     Const(String, Expr),
     /// `defer { stmts }` — run LIFO at scope exit / before return
@@ -332,6 +342,8 @@ pub struct StructDef {
     /// `struct Box[T] { ... }`
     pub type_params: Vec<String>,
     pub fields: Vec<(String, Type)>,
+    /// Default field values: `hp: Int = 100`
+    pub defaults: Vec<(String, Expr)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -459,6 +471,14 @@ pub struct ExternFn {
 }
 
 #[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub name: String,
+    pub type_params: Vec<String>,
+    pub target: Type,
+    pub visibility: Visibility,
+}
+
+#[derive(Debug, Clone)]
 pub struct Program {
     pub imports: Vec<String>,
     pub structs: Vec<StructDef>,
@@ -470,6 +490,8 @@ pub struct Program {
     pub consts: Vec<(String, Expr)>,
     /// `use path.to.name` or `use path.{a, b}` → local aliases
     pub uses: Vec<UseDecl>,
+    /// `type Name[T] = Target`
+    pub type_aliases: Vec<TypeAlias>,
 }
 
 #[derive(Debug, Clone)]

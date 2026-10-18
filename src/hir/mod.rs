@@ -45,6 +45,7 @@ pub enum HirStmt {
         else_body: Vec<HirStmt>,
     },
     While {
+        label: Option<String>,
         cond: HirExpr,
         body: Vec<HirStmt>,
     },
@@ -66,8 +67,8 @@ pub enum HirStmt {
         scrutinee: HirExpr,
         arms: Vec<(Pattern, Option<HirExpr>, Vec<HirStmt>)>,
     },
-    Break,
-    Continue,
+    Break(Option<String>),
+    Continue(Option<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +183,7 @@ fn lower_stmt(s: &Stmt) -> HirStmt {
             else_body: lower_stmts(b),
         },
         Stmt::While(c, body) => HirStmt::While {
+            label: None,
             cond: lower_expr(c),
             body: lower_stmts(body),
         },
@@ -248,8 +250,18 @@ fn lower_stmt(s: &Stmt) -> HirStmt {
                 arms: expanded,
             }
         }
-        Stmt::Break => HirStmt::Break,
-        Stmt::Continue => HirStmt::Continue,
+        Stmt::Break(l) => HirStmt::Break(l.clone()),
+        Stmt::Continue(l) => HirStmt::Continue(l.clone()),
+        Stmt::Labeled(label, inner) => {
+            match lower_stmt(inner) {
+                HirStmt::While { cond, body, .. } => HirStmt::While {
+                    label: Some(label.clone()),
+                    cond,
+                    body,
+                },
+                other => other,
+            }
+        }
         Stmt::Defer(_) => HirStmt::Expr(HirExpr::Literal(Value::Unit)), // desugared earlier
     }
 }
