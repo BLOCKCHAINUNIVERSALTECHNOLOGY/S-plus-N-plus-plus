@@ -296,6 +296,15 @@ impl<'a> Parser<'a> {
                     }
                 }
             }
+            // Rewrite `Self` type placeholders to the impl type
+            for t in f.param_types.iter_mut() {
+                if matches!(t, Type::Struct(n) if n == "__Self__") {
+                    *t = Type::Struct(type_name.clone());
+                }
+            }
+            if matches!(&f.return_type, Type::Struct(n) if n == "__Self__") {
+                f.return_type = Type::Struct(type_name.clone());
+            }
             // Name: Type.method (dispatch stays the same; trait checked in sema)
             f.name = format!("{}.{}", type_name, f.name);
             // Stash trait name in module_path sentinel if present: ["__trait__", TraitName]
@@ -457,6 +466,22 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             Token::Ident(n) => n,
             _ => return Err(self.err("expected enum name")),
         };
+        let mut type_params = Vec::new();
+        if *self.current() == Token::LBracket {
+            self.bump();
+            loop {
+                match self.bump() {
+                    Token::Ident(t) => type_params.push(t),
+                    _ => return Err(self.err("expected type parameter in enum")),
+                }
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.eat(Token::RBracket)?;
+        }
         self.eat(Token::LBrace)?;
         let mut variants = Vec::new();
         while *self.current() != Token::RBrace && *self.current() != Token::Eof {
@@ -485,7 +510,13 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             }
         }
         self.eat(Token::RBrace)?;
-        Ok(crate::ast::EnumDef { name, visibility: Visibility::Public, module_path: vec![], variants })
+        Ok(crate::ast::EnumDef {
+            name,
+            visibility: Visibility::Public,
+            module_path: vec![],
+            type_params,
+            variants,
+        })
     }
 
     fn struct_def(&mut self) -> Result<StructDef, String> {
@@ -494,6 +525,22 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             Token::Ident(n) => n,
             _ => return Err("expected struct name".into()),
         };
+        let mut type_params = Vec::new();
+        if *self.current() == Token::LBracket {
+            self.bump();
+            loop {
+                match self.bump() {
+                    Token::Ident(t) => type_params.push(t),
+                    _ => return Err(self.err("expected type parameter in struct")),
+                }
+                if *self.current() == Token::Comma {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+            self.eat(Token::RBracket)?;
+        }
         self.eat(Token::LBrace)?;
         let mut fields = Vec::new();
         while *self.current() != Token::RBrace && *self.current() != Token::Eof {
@@ -507,7 +554,13 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             if *self.current() == Token::Comma { self.bump(); }
         }
         self.eat(Token::RBrace)?;
-        Ok(StructDef { name, visibility: Visibility::Public, module_path: vec![], fields })
+        Ok(StructDef {
+            name,
+            visibility: Visibility::Public,
+            module_path: vec![],
+            type_params,
+            fields,
+        })
     }
 
     fn parse_type(&mut self) -> Result<Type, String> {
@@ -544,6 +597,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
             Token::Ident(name) => match name.as_str() {
                 "Int" => Type::Int,
                 "Float" => Type::Float,
+                "Self" => Type::Struct("__Self__".into()), // rewritten in impl_block
                 "String" => Type::Str,
                 "Bool" => Type::Bool,
                 "Unit" => Type::Unit,
@@ -551,10 +605,8 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                 "Thread" => Type::Thread,
                 "List" => Type::List,
                 "Map" => Type::Map,
-                other if other.len() == 1 && other.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => {
-                    Type::Generic(other.to_string())
-                }
-                other => Type::Struct(other.to_string()), // user type or generic
+                // Type params like `T` become Generic via normalize_type when listed in fn[T]
+                other => Type::Struct(other.to_string()),
             },
             token => return Err(format!("expected type, got {:?}", token)),
         };
@@ -574,19 +626,22 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                     self.eat(Token::RBracket)?;
                     Ok(Type::MapOf(Box::new(k), Box::new(v)))
                 }
-                Type::Struct(name) if name.len() == 1 || name.chars().all(|c| c.is_uppercase()) => {
-                    // treat as generic application placeholder — keep Struct name
+                Type::Struct(name) => {
+                    let mut args = Vec::new();
+                    args.push(self.parse_type()?);
+                    while *self.current() == Token::Comma {
+                        self.bump();
+                        args.push(self.parse_type()?);
+                    }
+                    self.eat(Token::RBracket)?;
+                    Ok(Type::StructApp(name, args))
+                }
+                other => {
                     let _ = self.parse_type()?;
                     while *self.current() == Token::Comma {
                         self.bump();
                         let _ = self.parse_type()?;
                     }
-                    self.eat(Token::RBracket)?;
-                    Ok(Type::Struct(name))
-                }
-                other => {
-                    // Generic type param style T
-                    let _ = self.parse_type()?;
                     self.eat(Token::RBracket)?;
                     Ok(other)
                 }
@@ -1274,7 +1329,7 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                             .unwrap_or(false);
                         // Intrinsic methods on a single var → MethodCall (`xs.len()`).
                         // Otherwise dotted Call (`combat.damage`, `a.b.f`, `Option.Some`).
-                        let intrinsic = matches!(
+                        let _intrinsic = matches!(
                             method.as_str(),
                             "len" | "get" | "push" | "set" | "contains" | "rev" | "sort"
                                 | "sum" | "min" | "max" | "is_empty" | "map" | "filter"
@@ -1284,7 +1339,9 @@ fn extern_fn(&mut self) -> Result<crate::ast::ExternFn, String> {
                                 | "index_of" | "substring" | "repeat" | "trim" | "has"
                                 | "keys" | "values" | "remove"
                         );
-                        if is_type_or_mod || base.contains('.') || !intrinsic {
+                        // Type/module path → Call (`Player.heal`, `a.b.v`, `Option.Some`)
+                        // Value receiver → MethodCall (`p.heal(5)`, `xs.len()`)
+                        if is_type_or_mod || base.contains('.') {
                             e = Expr::Call(format!("{base}.{method}"), args);
                         } else {
                             e = Expr::MethodCall {
@@ -1610,6 +1667,37 @@ fn dotted_var_path(e: &Expr) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_type_params() {
+        let src = "fn identity[T](x: T) -> T { return x; } fn main() -> Int { return identity(1); }";
+        let p = parse_program(src).unwrap();
+        let id = p.functions.iter().find(|f| f.name == "identity").unwrap();
+        assert_eq!(id.type_params, vec!["T".to_string()], "{:?}", id.type_params);
+        assert!(matches!(id.param_types[0], crate::ast::Type::Struct(ref n) if n == "T")
+            || matches!(id.param_types[0], crate::ast::Type::Generic(ref n) if n == "T"),
+            "{:?}", id.param_types);
+    }
+
+    #[test]
+    fn parses_value_method_vs_module() {
+        let src = r#"
+            mod combat { pub fn hit(x: Int) -> Int { return x; } }
+            struct P { x: Int }
+            impl P { fn get(self) -> Int { return self.x; } }
+            fn main() -> Int {
+                let p = P { x: 1 };
+                let a = combat.hit(1);
+                let b = p.get();
+                return a + b;
+            }
+        "#;
+        let p = parse_program(src).expect("parse");
+        // just ensure parse ok and functions include combat.hit and P.get
+        let names: Vec<_> = p.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.iter().any(|n| *n == "combat.hit"), "{names:?}");
+        assert!(names.iter().any(|n| *n == "P.get"), "{names:?}");
+    }
+
     use super::*;
 
     #[test]

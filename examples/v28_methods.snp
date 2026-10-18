@@ -1,0 +1,26 @@
+// 2.8 — struct methods polish + Self
+struct Player {
+    hp: Int,
+    name: String
+}
+
+impl Player {
+    fn heal(self, amount: Int) -> Self {
+        return Player { hp: self.hp + amount, name: self.name };
+    }
+    fn is_alive(self) -> Bool {
+        return self.hp > 0;
+    }
+    fn label(self) -> String {
+        return str_join([self.name, " hp=", int_to_str(self.hp)], "");
+    }
+}
+
+fn main() -> Int {
+    let p = Player { hp: 10, name: "Hero" };
+    let p2 = p.heal(5);
+    print(p2.label());
+    assert(p2.is_alive(), "alive");
+    assert(p2.hp == 15, "healed");
+    return p2.hp;
+}

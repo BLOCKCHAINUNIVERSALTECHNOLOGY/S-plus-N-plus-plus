@@ -1,0 +1,16 @@
+// 2.10 — monomorphization demo
+fn identity[T](x: T) -> T {
+    return x;
+}
+
+fn add_one[T](x: T) -> T {
+    // only makes sense for Int at call sites we use
+    return x;
+}
+
+fn main() -> Int {
+    let a = identity(100);
+    let b = identity(7);
+    // both share identity__Int specialization
+    return a + b;
+}

@@ -10,6 +10,12 @@ thread_local! {
     static CURRENT_MODULE: RefCell<Vec<String>> = RefCell::new(Vec::new());
     static FN_META: RefCell<HashMap<String, (crate::ast::Visibility, Vec<String>)>> =
         RefCell::new(HashMap::new());
+    /// name -> (type_params, trait_bounds)
+    static FN_BOUNDS: RefCell<HashMap<String, (Vec<String>, Vec<(String, String)>)>> =
+        RefCell::new(HashMap::new());
+    /// trait name -> set of type names that implement it
+    static TRAIT_IMPLS: RefCell<HashMap<String, HashSet<String>>> =
+        RefCell::new(HashMap::new());
 }
 
 fn with_enums<R>(f: impl FnOnce(&HashMap<String, EnumDef>) -> R) -> R {
@@ -100,7 +106,22 @@ fn types_compatible(expected: &Type, got: &Type) -> bool {
     if expected == got || *got == Type::Unknown || *expected == Type::Unknown {
         return true;
     }
-    matches!(expected, Type::Generic(_)) || matches!(got, Type::Generic(_))
+    if matches!(expected, Type::Generic(_)) || matches!(got, Type::Generic(_)) {
+        return true;
+    }
+    // Box vs Box[Int] — same struct head
+    match (expected, got) {
+        (Type::Struct(a), Type::StructApp(b, _)) | (Type::StructApp(a, _), Type::Struct(b)) => a == b,
+        (Type::StructApp(a, _), Type::StructApp(b, _)) => a == b,
+        (Type::Enum(a), Type::EnumApp(b, _)) | (Type::EnumApp(a, _), Type::Enum(b)) => a == b,
+        (Type::EnumApp(a, _), Type::EnumApp(b, _)) => a == b,
+        // Option parsed as StructApp before resolution
+        (Type::Enum(a), Type::StructApp(b, _)) | (Type::StructApp(a, _), Type::Enum(b)) => a == b,
+        (Type::EnumApp(a, _), Type::StructApp(b, _)) | (Type::StructApp(a, _), Type::EnumApp(b, _)) => a == b,
+        (Type::List, Type::ListOf(_)) | (Type::ListOf(_), Type::List) => true,
+        (Type::Map, Type::MapOf(_, _)) | (Type::MapOf(_, _), Type::Map) => true,
+        _ => false,
+    }
 }
 
 
@@ -123,7 +144,7 @@ fn expr_type(
             let builtins = [
                 "print", "spawn", "join", "channel", "send", "receive",
                 "str_len", "str_contains", "str_upper", "str_lower", "str_trim", "str_concat",
-                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "str_parse_int", "str_parse_float", "int_to_str", "float_to_str", "floor", "ceil", "round", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
+                "list", "list_push", "list_len", "list_get", "list_set", "list_concat", "list_map", "list_flat_map", "list_filter", "list_fold", "list_slice", "list_rev", "list_contains", "list_sort", "list_sort_by", "list_sum", "tuple_get", "tuple_len", "list_min", "list_max", "list_any", "list_all", "list_flatten", "list_find", "list_is_empty", "list_zip", "enumerate", "list_unique", "list_chunk", "list_insert", "list_remove", "list_pop", "str_char_at", "map_get_or", "sqrt", "list_take", "list_drop", "range", "str_lines", "str_join", "str_index_of", "str_substring", "str_repeat", "str_is_empty", "str_trim", "str_lower", "str_parse_int", "str_parse_float", "int_to_str", "float_to_str", "floor", "ceil", "round", "list_insert", "list_remove", "list_pop", "str_char_at", "map_get_or", "sqrt", "clone", "map_len", "map_merge", "map_keys", "map_values", "map_remove", "str_split", "str_replace", "str_starts_with", "str_ends_with", "str_repeat", "list_flatten",
                 "map", "map_set", "map_get", "map_has", "map_len", "map_keys", "map_values", "map_remove",
                 "abs", "min", "max", "pow", "sqrt_approx",
                 "now_ms", "rand", "rand_range",
@@ -150,12 +171,15 @@ fn expr_type(
                     "tuple_get" => Type::Unknown,
                     "str_join" | "str_substring" | "str_trim" | "str_lower" | "str_upper" | "int_to_str" | "float_to_str" => Type::Str,
                     "str_parse_int" | "floor" | "ceil" | "round" => Type::Int,
+                    "sqrt" => Type::Float,
+                    "str_char_at" => Type::Str,
+                    "map_get_or" => Type::Unknown,
                     "str_parse_float" => Type::Float,
                     "list_any" | "list_all" => Type::Bool,
                     "clone" => Type::Unknown,
                     "list_fold" => Type::Unknown,
                     "map" | "map_set" | "map_remove" | "map_merge" => Type::Map,
-                    "map_keys" | "map_values" | "list_flatten" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_lines" | "enumerate" => Type::List,
+                    "map_keys" | "map_values" | "list_flatten" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_insert" | "list_remove" | "list_pop" | "list_take" | "list_drop" | "str_lines" | "enumerate" => Type::List,
                     "str_repeat" => Type::Str,
                     "json_parse" => Type::Unknown,
                     "fs_write_text" | "assert" | "assert_true" | "assert_false" | "assert_eq" | "panic" | "todo" => Type::Unit,
@@ -212,10 +236,22 @@ fn expr_type(
                 let compatible = match &params[i] {
                     Type::Ref(inner) | Type::MutRef(inner) => got == **inner,
                     Type::Generic(g) => {
+                        if let Some(prev) = subst.get(g) {
+                            if prev != &got
+                                && *prev != Type::Unknown
+                                && got != Type::Unknown
+                            {
+                                return Err(format!(
+                                    "function `{n}` type parameter `{g}` inferred as both {} and {}",
+                                    type_name(prev),
+                                    type_name(&got)
+                                ));
+                            }
+                        }
                         subst.insert(g.clone(), got.clone());
                         true
                     }
-                    _ => got == params[i] || got == Type::Unknown || params[i] == Type::Unknown,
+                    _ => types_compatible(&params[i], &got),
                 };
                 if !compatible {
                     return Err(format!(
@@ -226,6 +262,7 @@ fn expr_type(
                     ));
                 }
             }
+            check_call_trait_bounds(n, &subst)?;
             match ret {
                 Type::Generic(g) => Ok(subst.get(g).cloned().unwrap_or(Type::Unknown)),
                 other => Ok(other.clone()),
@@ -235,10 +272,12 @@ fn expr_type(
             let t = expr_type(e, env, sigs, structs)?;
             match op {
                 Token::Minus => {
-                    if t == Type::Int || t == Type::Unknown {
+                    if t == Type::Float {
+                        Ok(Type::Float)
+                    } else if t == Type::Int || t == Type::Unknown {
                         Ok(Type::Int)
                     } else {
-                        Err(format!("unary - expects Int, got {}", type_name(&t)))
+                        Err(format!("unary - expects Int or Float, got {}", type_name(&t)))
                     }
                 }
                 Token::Bang => {
@@ -295,16 +334,35 @@ fn expr_type(
                 }
             }
             let ot = expr_type(obj, env, sigs, structs)?;
-            match ot {
-                Type::Struct(name) => {
+            match &ot {
+                Type::Struct(name) | Type::StructApp(name, _) => {
+                    let type_args: Vec<Type> = match &ot {
+                        Type::StructApp(_, args) => args.clone(),
+                        _ => vec![],
+                    };
                     let def = structs
-                        .get(&name)
+                        .get(name)
                         .ok_or_else(|| format!("unknown struct type `{name}`"))?;
-                    def.fields
+                    let fty = def
+                        .fields
                         .iter()
                         .find(|(f, _)| f == field)
                         .map(|(_, t)| t.clone())
-                        .ok_or_else(|| format!("struct `{name}` has no field `{field}`"))
+                        .ok_or_else(|| format!("struct `{name}` has no field `{field}`"))?;
+                    let fty = normalize_type(&fty, &def.type_params);
+                    if def.type_params.is_empty() || type_args.is_empty() {
+                        // Bare `Box` without type args: generic fields are unknown
+                        Ok(match fty {
+                            Type::Generic(_) => Type::Unknown,
+                            other => other,
+                        })
+                    } else {
+                        let mut subst = HashMap::new();
+                        for (p, a) in def.type_params.iter().zip(type_args.iter()) {
+                            subst.insert(p.clone(), a.clone());
+                        }
+                        Ok(apply_subst_type(&fty, &subst))
+                    }
                 }
                 Type::Unknown => Ok(Type::Unknown),
                 other => Err(format!(
@@ -315,19 +373,47 @@ fn expr_type(
         }
         Expr::StructLit { name, fields } => {
             if let Some(def) = structs.get(name) {
+                let mut subst: HashMap<String, Type> = HashMap::new();
                 for (fname, fexpr) in fields {
                     let got = expr_type(fexpr, env, sigs, structs)?;
-                    if let Some((_, expected)) = def.fields.iter().find(|(f, _)| f == fname) {
-                        if got != *expected && got != Type::Unknown && *expected != Type::Unknown {
-                            return Err(format!(
-                                "field `{fname}` expects {}, got {}",
-                                type_name(expected),
-                                type_name(&got)
-                            ));
+                    if let Some((_, expected_raw)) = def.fields.iter().find(|(f, _)| f == fname) {
+                        let expected = normalize_type(expected_raw, &def.type_params);
+                        match &expected {
+                            Type::Generic(g) => {
+                                if got != Type::Unknown {
+                                    if let Some(prev) = subst.get(g) {
+                                        if prev != &got && *prev != Type::Unknown {
+                                            return Err(format!(
+                                                "struct `{name}` type parameter `{g}` mismatch: {} vs {}",
+                                                type_name(prev),
+                                                type_name(&got)
+                                            ));
+                                        }
+                                    }
+                                    subst.insert(g.clone(), got.clone());
+                                }
+                            }
+                            exp => {
+                                let exp2 = apply_subst_type(exp, &subst);
+                                if got != exp2 && got != Type::Unknown && exp2 != Type::Unknown {
+                                    return Err(format!(
+                                        "field `{fname}` expects {}, got {}",
+                                        type_name(&exp2),
+                                        type_name(&got)
+                                    ));
+                                }
+                            }
                         }
                     } else {
                         return Err(format!("struct `{name}` has no field `{fname}`"));
                     }
+                }
+                if !def.type_params.is_empty() {
+                    let mut args = Vec::new();
+                    for p in &def.type_params {
+                        args.push(subst.get(p).cloned().unwrap_or(Type::Unknown));
+                    }
+                    return Ok(Type::StructApp(name.clone(), args));
                 }
             }
             Ok(Type::Struct(name.clone()))
@@ -387,23 +473,68 @@ fn expr_type(
                     args.len()
                 ));
             }
-            for (a, t) in args.iter().zip(payload.1.iter()) {
+            let mut subst: HashMap<String, Type> = HashMap::new();
+            for (a, t_raw) in args.iter().zip(payload.1.iter()) {
+                let expected = normalize_type(t_raw, &def.type_params);
                 let got = expr_type(a, env, sigs, structs)?;
-                if got != *t && got != Type::Unknown && *t != Type::Unknown {
-                    return Err(format!(
-                        "variant field type mismatch: expected {}, got {}",
-                        type_name(t),
-                        type_name(&got)
-                    ));
+                match &expected {
+                    Type::Generic(g) => {
+                        if got != Type::Unknown {
+                            if let Some(prev) = subst.get(g) {
+                                if prev != &got && *prev != Type::Unknown {
+                                    return Err(format!(
+                                        "enum `{enum_name}` type parameter `{g}` mismatch: {} vs {}",
+                                        type_name(prev),
+                                        type_name(&got)
+                                    ));
+                                }
+                            }
+                            subst.insert(g.clone(), got.clone());
+                        }
+                    }
+                    exp => {
+                        let exp2 = apply_subst_type(exp, &subst);
+                        if got != exp2
+                            && got != Type::Unknown
+                            && exp2 != Type::Unknown
+                            && !types_compatible(&exp2, &got)
+                        {
+                            return Err(format!(
+                                "variant field type mismatch: expected {}, got {}",
+                                type_name(&exp2),
+                                type_name(&got)
+                            ));
+                        }
+                    }
                 }
             }
-            Ok(Type::Enum(enum_name.clone()))
+            if !def.type_params.is_empty() {
+                let mut type_args = Vec::new();
+                for p in &def.type_params {
+                    type_args.push(subst.get(p).cloned().unwrap_or(Type::Unknown));
+                }
+                Ok(Type::EnumApp(enum_name.clone(), type_args))
+            } else {
+                Ok(Type::Enum(enum_name.clone()))
+            }
         }),
         Expr::MethodCall {
             receiver,
             method,
             args,
         } => {
+            // Module / namespaced function: `combat.damage(x)` where `combat.damage` is a fn
+            if let Expr::Var(n) = receiver.as_ref() {
+                let dotted = format!("{n}.{method}");
+                if sigs.contains_key(&dotted) {
+                    return expr_type(
+                        &Expr::Call(dotted, args.clone()),
+                        env,
+                        sigs,
+                        structs,
+                    );
+                }
+            }
             let recv_ty = expr_type(receiver, env, sigs, structs)?;
             if let Some(builtin) = intrinsic_method_name(&recv_ty, method)
                 .or_else(|| {
@@ -420,15 +551,34 @@ fn expr_type(
                 return expr_type(&Expr::Call(builtin.to_string(), full_args), env, sigs, structs);
             }
             let type_name_s = match &recv_ty {
-                Type::Struct(n) => n.clone(),
+                Type::Struct(n) | Type::StructApp(n, _) => n.clone(),
                 other => {
                     return Err(format!(
-                        "method `{method}` requires struct/list/string/map receiver, got {}",
+                        "method `{method}` requires struct/list/string/map receiver, got {}
+  help: call as `Type.method(value, ...)` or implement `impl Type {{ fn {method}(self, ...) }}`",
                         type_name(other)
                     ));
                 }
             };
             let full = format!("{type_name_s}.{method}");
+            if !sigs.contains_key(&full) {
+                let available: Vec<_> = sigs
+                    .keys()
+                    .filter(|k| k.starts_with(&format!("{type_name_s}.")))
+                    .cloned()
+                    .collect();
+                let hint = if available.is_empty() {
+                    format!(
+                        "no methods on `{type_name_s}` — add `impl {type_name_s} {{ fn {method}(self, ...) {{ ... }} }}`"
+                    )
+                } else {
+                    format!("available: {}", available.join(", "))
+                };
+                return Err(format!(
+                    "unknown method `{full}`
+  help: {hint}"
+                ));
+            }
             let mut full_args = vec![(*receiver.as_ref()).clone()];
             full_args.extend(args.iter().cloned());
             expr_type(&Expr::Call(full, full_args), env, sigs, structs)
@@ -438,6 +588,7 @@ fn expr_type(
             let t = expr_type(inner, env, sigs, structs)?;
             match t {
                 Type::Enum(n) if n == "Result" => Ok(Type::Int),
+                Type::EnumApp(n, _) if n == "Result" => Ok(Type::Int),
                 Type::Unknown => Ok(Type::Unknown),
                 other => Err(format!("`?` expects Result, got {}", type_name(&other))),
             }
@@ -878,10 +1029,10 @@ fn ownership_expr(
                         | "str_concat"
                         | "list"
                         | "list_push"
-                        | "list_len" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
+                        | "list_len" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_insert" | "list_remove" | "list_pop" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "sqrt" | "str_char_at" | "map_get_or" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "list_get"
                         | "list_set"
-                        | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
+                        | "list_concat" | "list_map" | "list_flat_map" | "list_filter" | "list_fold" | "list_flat_map" | "list_contains" | "list_slice" | "list_min" | "list_max" | "list_any" | "list_all" | "list_sum" | "list_sort" | "list_sort_by" | "list_flatten" | "range" | "clone" | "map_len" | "map_keys" | "map_values" | "list_find" | "list_is_empty" | "list_zip" | "enumerate" | "list_unique" | "list_chunk" | "list_insert" | "list_remove" | "list_pop" | "list_take" | "list_drop" | "str_is_empty" | "str_lines" | "str_trim" | "str_lower" | "str_parse_int" | "str_parse_float" | "int_to_str" | "float_to_str" | "floor" | "ceil" | "round" | "sqrt" | "str_char_at" | "map_get_or" | "str_split" | "str_replace" | "str_starts_with" | "str_ends_with"
                         | "map"
                         | "map_set"
                         | "map_get"
@@ -924,18 +1075,18 @@ fn ownership_expr(
             method,
             args,
         } => {
-            // Intrinsic list/str/map methods borrow receiver (like list_len).
-            // User struct methods move receiver (by-value self).
-            let recv_ty = env
-                .get(&moved_var(receiver).unwrap_or_default())
-                .cloned()
-                .unwrap_or(Type::Unknown);
-            let is_intrinsic = intrinsic_method_name(&recv_ty, method).is_some()
-                || intrinsic_method_name(&Type::List, method).is_some()
-                || intrinsic_method_name(&Type::Str, method).is_some()
-                || intrinsic_method_name(&Type::Map, method).is_some();
-            let move_recv = !is_intrinsic && moved_var(receiver).is_some();
-            ownership_expr(receiver, env, moved, move_recv, sigs)?;
+            // Module fn `combat.hit(x)` — no receiver value to own
+            if let Expr::Var(n) = receiver.as_ref() {
+                let dotted = format!("{n}.{method}");
+                if sigs.contains_key(&dotted) {
+                    for a in args {
+                        ownership_expr(a, env, moved, moved_var(a).is_some(), sigs)?;
+                    }
+                    return Ok(());
+                }
+            }
+            // Method-call sugar (`p.heal(5)`, `xs.len()`) borrows the receiver
+            ownership_expr(receiver, env, moved, false, sigs)?;
             for a in args {
                 ownership_expr(a, env, moved, moved_var(a).is_some(), sigs)?;
             }
@@ -1139,11 +1290,23 @@ fn definite_expr(
         }
         Expr::Int(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) => {}
         Expr::Lambda { .. } => {}
-        Expr::MethodCall { receiver, args, .. } => {
+        Expr::MethodCall { receiver, method, args, .. } => {
+            // Module-style Call doesn't need receiver definite-assigned as a value
+            if let Expr::Var(n) = receiver.as_ref() {
+                // can't see sigs here — still check args only if n looks like module path
+                // Always check args; for receiver Var skip if not in types (module name)
+                if !types.contains_key(n) {
+                    for a in args {
+                        definite_expr(a, types, assigned)?;
+                    }
+                    return Ok(());
+                }
+            }
             definite_expr(receiver, types, assigned)?;
             for a in args {
                 definite_expr(a, types, assigned)?;
             }
+            let _ = method;
         }
         Expr::VariantLit { args, .. } => {
             for a in args {
@@ -1544,11 +1707,31 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
 
     let mut structs = HashMap::new();
     for s in &program.structs {
-        structs.insert(s.name.clone(), s.clone());
+        let mut s = s.clone();
+        s.fields = s
+            .fields
+            .iter()
+            .map(|(n, t)| (n.clone(), normalize_type(t, &s.type_params)))
+            .collect();
+        structs.insert(s.name.clone(), s);
     }
     let mut enums = HashMap::new();
     for e in &program.enums {
-        enums.insert(e.name.clone(), e.clone());
+        let mut e = e.clone();
+        e.variants = e
+            .variants
+            .iter()
+            .map(|(vn, payload)| {
+                (
+                    vn.clone(),
+                    payload
+                        .iter()
+                        .map(|t| normalize_type(t, &e.type_params))
+                        .collect(),
+                )
+            })
+            .collect();
+        enums.insert(e.name.clone(), e);
     }
     // Prelude: Result convention (Ok(Int) / Err(String)) if user did not define Result
     if !enums.contains_key("Result") {
@@ -1556,6 +1739,7 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
             name: "Result".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
+            type_params: vec![],
             variants: vec![
                 ("Ok".into(), vec![Type::Int]),
                 ("Err".into(), vec![Type::Str]),
@@ -1568,6 +1752,7 @@ pub fn desugar_methods(program: &mut Program) -> Result<(), String> {
             name: "Option".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
+            type_params: vec![],
             variants: vec![
                 ("None".into(), vec![]),
                 ("Some".into(), vec![Type::Int]),
@@ -1722,6 +1907,17 @@ fn desugar_expr(
             method,
             args,
         } => {
+            // Module function first: `combat.damage(x)` → Call("combat.damage", [x])
+            if let Expr::Var(n) = receiver.as_ref() {
+                let dotted = format!("{n}.{method}");
+                if sigs.contains_key(&dotted) {
+                    let mut new_args = Vec::new();
+                    for a in args {
+                        new_args.push(desugar_expr(a, env, sigs, structs)?);
+                    }
+                    return Ok(Expr::Call(dotted, new_args));
+                }
+            }
             let recv = desugar_expr(receiver, env, sigs, structs)?;
             let mut new_args = Vec::new();
             for a in args {
@@ -1941,6 +2137,10 @@ fn check_trait_bounds(program: &Program) -> Result<(), String> {
                     "in function `{}`: unknown trait `{tr}` in where-clause",
                     f.name
                 ));
+            }
+            // Generic type params are checked at each call site via FN_BOUNDS
+            if f.type_params.iter().any(|p| p == ty) {
+                continue;
             }
             let ok = impl_map.get(tr).map(|s| s.contains(ty)).unwrap_or(false);
             if !ok {
@@ -2321,14 +2521,104 @@ fn desugar_defer_stmts(stmts: &[Stmt]) -> Vec<Stmt> {
 }
 
 
+
+pub fn normalize_type(t: &Type, type_params: &[String]) -> Type {
+    match t {
+        Type::Struct(n) if type_params.iter().any(|p| p == n) => Type::Generic(n.clone()),
+        Type::Generic(n) if type_params.iter().any(|p| p == n) => Type::Generic(n.clone()),
+        Type::StructApp(n, args) => Type::StructApp(
+            n.clone(),
+            args.iter().map(|a| normalize_type(a, type_params)).collect(),
+        ),
+        Type::EnumApp(n, args) => Type::EnumApp(
+            n.clone(),
+            args.iter().map(|a| normalize_type(a, type_params)).collect(),
+        ),
+        Type::Enum(n) if type_params.iter().any(|p| p == n) => Type::Generic(n.clone()),
+        Type::List => Type::List,
+        Type::ListOf(inner) => Type::ListOf(Box::new(normalize_type(inner, type_params))),
+        Type::MapOf(k, v) => Type::MapOf(
+            Box::new(normalize_type(k, type_params)),
+            Box::new(normalize_type(v, type_params)),
+        ),
+        Type::Ref(inner) => Type::Ref(Box::new(normalize_type(inner, type_params))),
+        Type::MutRef(inner) => Type::MutRef(Box::new(normalize_type(inner, type_params))),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|x| normalize_type(x, type_params)).collect()),
+        other => other.clone(),
+    }
+}
+
+fn concrete_type_name(t: &Type) -> Option<String> {
+    match t {
+        Type::Struct(n) => Some(n.clone()),
+        Type::StructApp(n, _) => Some(n.clone()),
+        Type::Enum(n) => Some(n.clone()),
+        Type::EnumApp(n, _) => Some(n.clone()),
+        Type::Int => Some("Int".into()),
+        Type::Float => Some("Float".into()),
+        Type::Str => Some("String".into()),
+        Type::Bool => Some("Bool".into()),
+        _ => None,
+    }
+}
+
+fn check_call_trait_bounds(fn_name: &str, subst: &HashMap<String, Type>) -> Result<(), String> {
+    FN_BOUNDS.with(|cell| {
+        let bounds_map = cell.borrow();
+        let Some((_tparams, bounds)) = bounds_map.get(fn_name) else {
+            return Ok(());
+        };
+        for (ty_name, trait_name) in bounds {
+            let concrete = if let Some(inferred) = subst.get(ty_name) {
+                concrete_type_name(inferred).unwrap_or_else(|| ty_name.clone())
+            } else {
+                ty_name.clone()
+            };
+            let ok = TRAIT_IMPLS.with(|impls| {
+                impls
+                    .borrow()
+                    .get(trait_name)
+                    .map(|set| set.contains(&concrete))
+                    .unwrap_or(false)
+            });
+            if !ok {
+                return Err(format!(
+                    "call `{fn_name}`: type `{concrete}` does not implement trait `{trait_name}` (required by where-clause)"
+                ));
+            }
+        }
+        Ok(())
+    })
+}
+
 pub fn check_program(program: &Program) -> Result<(), String> {
     let mut structs = HashMap::new();
     for s in &program.structs {
-        structs.insert(s.name.clone(), s.clone());
+        let mut s = s.clone();
+        s.fields = s
+            .fields
+            .iter()
+            .map(|(n, t)| (n.clone(), normalize_type(t, &s.type_params)))
+            .collect();
+        structs.insert(s.name.clone(), s);
     }
     let mut enums = HashMap::new();
     for e in &program.enums {
-        enums.insert(e.name.clone(), e.clone());
+        let mut e = e.clone();
+        e.variants = e
+            .variants
+            .iter()
+            .map(|(vn, payload)| {
+                (
+                    vn.clone(),
+                    payload
+                        .iter()
+                        .map(|t| normalize_type(t, &e.type_params))
+                        .collect(),
+                )
+            })
+            .collect();
+        enums.insert(e.name.clone(), e);
     }
     // Prelude: Result convention (Ok(Int) / Err(String)) if user did not define Result
     if !enums.contains_key("Result") {
@@ -2336,6 +2626,7 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             name: "Result".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
+            type_params: vec![],
             variants: vec![
                 ("Ok".into(), vec![Type::Int]),
                 ("Err".into(), vec![Type::Str]),
@@ -2348,6 +2639,7 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             name: "Option".into(),
             visibility: crate::ast::Visibility::Public,
             module_path: vec![],
+            type_params: vec![],
             variants: vec![
                 ("None".into(), vec![]),
                 ("Some".into(), vec![Type::Int]),
@@ -2360,18 +2652,42 @@ pub fn check_program(program: &Program) -> Result<(), String> {
     });
     let mut sigs = HashMap::new();
     let mut fn_meta: HashMap<String, (crate::ast::Visibility, Vec<String>)> = HashMap::new();
+    let mut fn_bounds: HashMap<String, (Vec<String>, Vec<(String, String)>)> = HashMap::new();
     for f in &program.functions {
-        sigs.insert(
-            f.name.clone(),
-            (f.param_types.clone(), f.return_type.clone()),
-        );
+        let params: Vec<Type> = f
+            .param_types
+            .iter()
+            .map(|t| normalize_type(t, &f.type_params))
+            .collect();
+        let ret = normalize_type(&f.return_type, &f.type_params);
+        sigs.insert(f.name.clone(), (params, ret));
         fn_meta.insert(
             f.name.clone(),
             (f.visibility, f.module_path.clone()),
         );
+        fn_bounds.insert(
+            f.name.clone(),
+            (f.type_params.clone(), f.trait_bounds.clone()),
+        );
     }
     FN_META.with(|cell| {
         *cell.borrow_mut() = fn_meta;
+    });
+    FN_BOUNDS.with(|cell| {
+        *cell.borrow_mut() = fn_bounds;
+    });
+    // Build trait → implementing types
+    let mut trait_impls: HashMap<String, HashSet<String>> = HashMap::new();
+    for f in &program.functions {
+        if f.module_path.len() == 2 && f.module_path[0] == "__trait__" {
+            let tr = f.module_path[1].clone();
+            if let Some((ty, _)) = f.name.rsplit_once('.') {
+                trait_impls.entry(tr).or_default().insert(ty.to_string());
+            }
+        }
+    }
+    TRAIT_IMPLS.with(|cell| {
+        *cell.borrow_mut() = trait_impls;
     });
     for e in &program.externs {
         if sigs.contains_key(&e.name) {
@@ -2413,6 +2729,950 @@ pub fn check_program(program: &Program) -> Result<(), String> {
             assigned.insert(p.clone(), ());
         }
         definite_stmts(&f.body, &mut types, &mut assigned)?;
+    }
+    Ok(())
+}
+
+
+// ---------------------------------------------------------------------------
+// Monomorphization: specialize generic functions at concrete call sites
+// ---------------------------------------------------------------------------
+
+fn mangle_subst(name: &str, subst: &HashMap<String, Type>) -> String {
+    let mut keys: Vec<_> = subst.keys().cloned().collect();
+    keys.sort();
+    let mut parts = vec![name.to_string()];
+    for k in keys {
+        let t = subst.get(&k).unwrap();
+        parts.push(type_name(t).replace(['[', ']', ' ', ','], "_"));
+    }
+    parts.join("__")
+}
+
+fn apply_subst_type(t: &Type, subst: &HashMap<String, Type>) -> Type {
+    match t {
+        Type::Generic(g) => subst.get(g).cloned().unwrap_or_else(|| t.clone()),
+        Type::Ref(inner) => Type::Ref(Box::new(apply_subst_type(inner, subst))),
+        Type::MutRef(inner) => Type::MutRef(Box::new(apply_subst_type(inner, subst))),
+        Type::Tuple(ts) => Type::Tuple(ts.iter().map(|x| apply_subst_type(x, subst)).collect()),
+        other => other.clone(),
+    }
+}
+
+fn rewrite_types_in_expr(e: &mut Expr, subst: &HashMap<String, Type>) {
+    match e {
+        Expr::Call(_, args) | Expr::CallExpr(_, args) => {
+            for a in args {
+                rewrite_types_in_expr(a, subst);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_types_in_expr(receiver, subst);
+            for a in args {
+                rewrite_types_in_expr(a, subst);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_types_in_expr(a, subst);
+            rewrite_types_in_expr(b, subst);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => rewrite_types_in_expr(a, subst),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_types_in_expr(cond, subst);
+            rewrite_types_in_expr(then_branch, subst);
+            rewrite_types_in_expr(else_branch, subst);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_types_in_expr(scrutinee, subst);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_types_in_expr(g, subst);
+                }
+                rewrite_types_in_expr(&mut a.value, subst);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                rewrite_types_in_expr(e, subst);
+            }
+        }
+        Expr::VariantLit { args, .. } => {
+            for a in args {
+                rewrite_types_in_expr(a, subst);
+            }
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                rewrite_types_in_expr(it, subst);
+            }
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(e) = p {
+                    rewrite_types_in_expr(e, subst);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => rewrite_types_in_stmts(body, subst),
+        _ => {}
+    }
+}
+
+fn rewrite_types_in_stmts(stmts: &mut [Stmt], subst: &HashMap<String, Type>) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_types_in_expr(e, subst);
+            }
+            Stmt::Decl(_, t) => {
+                *t = apply_subst_type(t, subst);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_types_in_expr(object, subst);
+                rewrite_types_in_expr(value, subst);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_types_in_expr(c, subst);
+                rewrite_types_in_stmts(a, subst);
+                rewrite_types_in_stmts(b, subst);
+            }
+            Stmt::While(c, body) => {
+                rewrite_types_in_expr(c, subst);
+                rewrite_types_in_stmts(body, subst);
+            }
+            Stmt::For { start, end, body, .. } => {
+                rewrite_types_in_expr(start, subst);
+                rewrite_types_in_expr(end, subst);
+                rewrite_types_in_stmts(body, subst);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                rewrite_types_in_expr(iter, subst);
+                rewrite_types_in_stmts(body, subst);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_types_in_expr(scrutinee, subst);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_types_in_expr(g, subst);
+                    }
+                    rewrite_types_in_stmts(&mut arm.body, subst);
+                }
+            }
+            Stmt::Defer(body) => rewrite_types_in_stmts(body, subst),
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_types_in_expr(value, subst);
+                rewrite_types_in_stmts(yes, subst);
+                rewrite_types_in_stmts(no, subst);
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn infer_call_subst(
+    template: &crate::ast::Function,
+    args: &[Expr],
+    env: &HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+) -> Result<HashMap<String, Type>, String> {
+    let mut subst = HashMap::new();
+    if args.len() != template.param_types.len() {
+        return Ok(subst);
+    }
+    for (i, arg) in args.iter().enumerate() {
+        let got = expr_type(arg, env, sigs, structs).unwrap_or(Type::Unknown);
+        let expected = normalize_type(&template.param_types[i], &template.type_params);
+        if let Type::Generic(g) = expected {
+            if got != Type::Unknown {
+                if let Some(prev) = subst.get(&g) {
+                    if prev != &got {
+                        // keep first
+                    }
+                } else {
+                    subst.insert(g, got);
+                }
+            }
+        }
+    }
+    // Ensure all type params have a binding; default Unknown→Int soft skip
+    for tp in &template.type_params {
+        subst.entry(tp.clone()).or_insert(Type::Unknown);
+    }
+    Ok(subst)
+}
+
+fn specialize_function(
+    template: &crate::ast::Function,
+    subst: &HashMap<String, Type>,
+) -> crate::ast::Function {
+    let name = mangle_subst(&template.name, subst);
+    let param_types: Vec<Type> = template
+        .param_types
+        .iter()
+        .map(|t| apply_subst_type(&normalize_type(t, &template.type_params), subst))
+        .collect();
+    let return_type =
+        apply_subst_type(&normalize_type(&template.return_type, &template.type_params), subst);
+    let mut body = template.body.clone();
+    rewrite_types_in_stmts(&mut body, subst);
+    crate::ast::Function {
+        name,
+        visibility: template.visibility,
+        module_path: template.module_path.clone(),
+        params: template.params.clone(),
+        param_types,
+        return_type,
+        type_params: vec![], // concrete
+        trait_bounds: vec![],
+        body,
+    }
+}
+
+fn rewrite_calls_in_expr(
+    e: &mut Expr,
+    templates: &HashMap<String, crate::ast::Function>,
+    env: &mut HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>, // mangled -> (template, subst)
+) {
+    match e {
+        Expr::Call(name, args) => {
+            for a in args.iter_mut() {
+                rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+            }
+            if let Some(tmpl) = templates.get(name) {
+                if !tmpl.type_params.is_empty() {
+                    if let Ok(subst) = infer_call_subst(tmpl, args, env, sigs, structs) {
+                        if subst.values().all(|t| *t != Type::Unknown) {
+                            let mangled = mangle_subst(name, &subst);
+                            needed.insert(mangled.clone(), (name.clone(), subst));
+                            *name = mangled;
+                        }
+                    }
+                }
+            }
+        }
+        Expr::CallExpr(callee, args) => {
+            rewrite_calls_in_expr(callee, templates, env, sigs, structs, needed);
+            for a in args {
+                rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_calls_in_expr(receiver, templates, env, sigs, structs, needed);
+            for a in args {
+                rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+            rewrite_calls_in_expr(b, templates, env, sigs, structs, needed);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => {
+            rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_calls_in_expr(cond, templates, env, sigs, structs, needed);
+            rewrite_calls_in_expr(then_branch, templates, env, sigs, structs, needed);
+            rewrite_calls_in_expr(else_branch, templates, env, sigs, structs, needed);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_calls_in_expr(scrutinee, templates, env, sigs, structs, needed);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_calls_in_expr(g, templates, env, sigs, structs, needed);
+                }
+                rewrite_calls_in_expr(&mut a.value, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::StructLit { fields, .. } => {
+            for (_, e) in fields {
+                rewrite_calls_in_expr(e, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::VariantLit { args, .. } => {
+            for a in args {
+                rewrite_calls_in_expr(a, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                rewrite_calls_in_expr(it, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(e) = p {
+                    rewrite_calls_in_expr(e, templates, env, sigs, structs, needed);
+                }
+            }
+        }
+        Expr::Lambda { body, .. } => {
+            rewrite_calls_in_stmts(body, templates, env, sigs, structs, needed);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_calls_in_stmts(
+    stmts: &mut [Stmt],
+    templates: &HashMap<String, crate::ast::Function>,
+    env: &mut HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::Let(n, e) | Stmt::Const(n, e) => {
+                rewrite_calls_in_expr(e, templates, env, sigs, structs, needed);
+                if let Ok(ty) = expr_type(e, env, sigs, structs) {
+                    env.insert(n.clone(), ty);
+                }
+            }
+            Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_calls_in_expr(e, templates, env, sigs, structs, needed);
+            }
+            Stmt::Decl(n, t) => {
+                env.insert(n.clone(), t.clone());
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_calls_in_expr(object, templates, env, sigs, structs, needed);
+                rewrite_calls_in_expr(value, templates, env, sigs, structs, needed);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_calls_in_expr(c, templates, env, sigs, structs, needed);
+                rewrite_calls_in_stmts(a, templates, env, sigs, structs, needed);
+                rewrite_calls_in_stmts(b, templates, env, sigs, structs, needed);
+            }
+            Stmt::While(c, body) => {
+                rewrite_calls_in_expr(c, templates, env, sigs, structs, needed);
+                rewrite_calls_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::For { start, end, body, var, .. } => {
+                rewrite_calls_in_expr(start, templates, env, sigs, structs, needed);
+                rewrite_calls_in_expr(end, templates, env, sigs, structs, needed);
+                env.insert(var.clone(), Type::Int);
+                rewrite_calls_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::ForIn { iter, body, var, index, .. } => {
+                rewrite_calls_in_expr(iter, templates, env, sigs, structs, needed);
+                env.insert(var.clone(), Type::Unknown);
+                if let Some(i) = index {
+                    env.insert(i.clone(), Type::Int);
+                }
+                rewrite_calls_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_calls_in_expr(scrutinee, templates, env, sigs, structs, needed);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_calls_in_expr(g, templates, env, sigs, structs, needed);
+                    }
+                    rewrite_calls_in_stmts(&mut arm.body, templates, env, sigs, structs, needed);
+                }
+            }
+            Stmt::Defer(body) => {
+                rewrite_calls_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_calls_in_expr(value, templates, env, sigs, structs, needed);
+                rewrite_calls_in_stmts(yes, templates, env, sigs, structs, needed);
+                rewrite_calls_in_stmts(no, templates, env, sigs, structs, needed);
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+/// Specialize generic functions at concrete call sites.
+/// Example: `identity(42)` with `fn identity[T](x: T) -> T` creates `identity__Int`.
+pub fn monomorphize(program: &mut Program) -> Result<(), String> {
+    let mut templates: HashMap<String, crate::ast::Function> = HashMap::new();
+    for f in &program.functions {
+        if !f.type_params.is_empty() {
+            templates.insert(f.name.clone(), f.clone());
+        }
+    }
+    if templates.is_empty() {
+        // Still monomorphize generic structs even when no generic functions
+        monomorphize_structs(program)?;
+        return Ok(());
+    }
+
+    let structs: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
+
+    // Fixed-point: discover specializations + rewrite calls
+    let mut specialized: HashMap<String, crate::ast::Function> = HashMap::new();
+    let max_iters = 32;
+    for _ in 0..max_iters {
+        let mut needed: HashMap<String, (String, HashMap<String, Type>)> = HashMap::new();
+        let mut sigs: HashMap<String, (Vec<Type>, Type)> = HashMap::new();
+        for f in &program.functions {
+            let params: Vec<Type> = f
+                .param_types
+                .iter()
+                .map(|t| normalize_type(t, &f.type_params))
+                .collect();
+            let ret = normalize_type(&f.return_type, &f.type_params);
+            sigs.insert(f.name.clone(), (params, ret));
+        }
+        for (n, f) in &specialized {
+            sigs.insert(n.clone(), (f.param_types.clone(), f.return_type.clone()));
+        }
+
+        // Rewrite in existing + specialized bodies
+        let mut all_fns: Vec<crate::ast::Function> = program.functions.clone();
+        all_fns.extend(specialized.values().cloned());
+        for f in &mut all_fns {
+            let mut env = HashMap::new();
+            for (p, t) in f.params.iter().zip(f.param_types.iter()) {
+                env.insert(p.clone(), normalize_type(t, &f.type_params));
+            }
+            rewrite_calls_in_stmts(
+                &mut f.body,
+                &templates,
+                &mut env,
+                &sigs,
+                &structs,
+                &mut needed,
+            );
+        }
+        // Write bodies back
+        for f in all_fns {
+            if specialized.contains_key(&f.name) {
+                specialized.insert(f.name.clone(), f);
+            } else if let Some(slot) = program.functions.iter_mut().find(|x| x.name == f.name) {
+                *slot = f;
+            }
+        }
+
+        let mut created = false;
+        for (mangled, (tmpl_name, subst)) in needed {
+            if specialized.contains_key(&mangled) || program.functions.iter().any(|f| f.name == mangled)
+            {
+                continue;
+            }
+            let Some(tmpl) = templates.get(&tmpl_name) else {
+                continue;
+            };
+            let spec = specialize_function(tmpl, &subst);
+            specialized.insert(mangled, spec);
+            created = true;
+        }
+        if !created {
+            break;
+        }
+    }
+
+    // Append function specializations; keep templates (unused at runtime if all calls rewritten)
+    for (_, f) in specialized {
+        if !program.functions.iter().any(|x| x.name == f.name) {
+            program.functions.push(f);
+        }
+    }
+
+    // --- Generic struct monomorphization ---
+    monomorphize_structs(program)?;
+    Ok(())
+}
+
+fn mangle_struct_name(name: &str, type_args: &[Type]) -> String {
+    let mut parts = vec![name.to_string()];
+    for t in type_args {
+        parts.push(type_name(t).replace(['[', ']', ' ', ',', '(', ')'], "_"));
+    }
+    parts.join("__")
+}
+
+fn specialize_struct(tmpl: &StructDef, subst: &HashMap<String, Type>) -> StructDef {
+    let type_args: Vec<Type> = tmpl
+        .type_params
+        .iter()
+        .map(|p| subst.get(p).cloned().unwrap_or(Type::Unknown))
+        .collect();
+    let name = mangle_struct_name(&tmpl.name, &type_args);
+    let fields = tmpl
+        .fields
+        .iter()
+        .map(|(n, t)| {
+            let t = normalize_type(t, &tmpl.type_params);
+            (n.clone(), apply_subst_type(&t, subst))
+        })
+        .collect();
+    StructDef {
+        name,
+        visibility: tmpl.visibility,
+        module_path: tmpl.module_path.clone(),
+        type_params: vec![],
+        fields,
+    }
+}
+
+fn infer_struct_subst(
+    tmpl: &StructDef,
+    fields: &[(String, Expr)],
+    env: &HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+) -> HashMap<String, Type> {
+    let mut subst = HashMap::new();
+    for (fname, fexpr) in fields {
+        // Prefer literal types without full env dependency
+        let got = match fexpr {
+            Expr::Int(_) => Type::Int,
+            Expr::Float(_) => Type::Float,
+            Expr::Bool(_) => Type::Bool,
+            Expr::Str(_) => Type::Str,
+            _ => expr_type(fexpr, env, sigs, structs).unwrap_or(Type::Unknown),
+        };
+        if let Some((_, expected_raw)) = tmpl.fields.iter().find(|(f, _)| f == fname) {
+            let expected = normalize_type(expected_raw, &tmpl.type_params);
+            // Also treat Struct(type_param_name) as Generic
+            let expected = match &expected {
+                Type::Struct(n) if tmpl.type_params.iter().any(|p| p == n) => Type::Generic(n.clone()),
+                other => other.clone(),
+            };
+            if let Type::Generic(g) = expected {
+                if got != Type::Unknown {
+                    subst.entry(g).or_insert(got);
+                }
+            }
+        }
+    }
+    subst
+}
+
+fn rewrite_type_struct_apps(
+    t: &mut Type,
+    templates: &HashMap<String, StructDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+) {
+    match t {
+        Type::StructApp(name, args) => {
+            if let Some(tmpl) = templates.get(name) {
+                if !tmpl.type_params.is_empty() && !args.is_empty() {
+                    if args.iter().all(|a| *a != Type::Unknown) {
+                        let mut subst = HashMap::new();
+                        for (p, a) in tmpl.type_params.iter().zip(args.iter()) {
+                            subst.insert(p.clone(), a.clone());
+                        }
+                        let mangled = mangle_struct_name(name, args);
+                        needed.insert(mangled.clone(), (name.clone(), subst));
+                        *t = Type::Struct(mangled);
+                        return;
+                    }
+                }
+            }
+            for a in args.iter_mut() {
+                rewrite_type_struct_apps(a, templates, needed);
+            }
+        }
+        Type::ListOf(inner) | Type::Ref(inner) | Type::MutRef(inner) => {
+            rewrite_type_struct_apps(inner, templates, needed);
+        }
+        Type::MapOf(k, v) => {
+            rewrite_type_struct_apps(k, templates, needed);
+            rewrite_type_struct_apps(v, templates, needed);
+        }
+        Type::Tuple(ts) => {
+            for x in ts {
+                rewrite_type_struct_apps(x, templates, needed);
+            }
+        }
+        Type::EnumApp(_, args) => {
+            for a in args {
+                rewrite_type_struct_apps(a, templates, needed);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_struct_lits_in_expr(
+    e: &mut Expr,
+    templates: &HashMap<String, StructDef>,
+    env: &mut HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+) {
+    match e {
+        Expr::StructLit { name, fields } => {
+            for (_, fe) in fields.iter_mut() {
+                rewrite_struct_lits_in_expr(fe, templates, env, sigs, structs, needed);
+            }
+            if let Some(tmpl) = templates.get(name) {
+                if !tmpl.type_params.is_empty() {
+                    let subst = infer_struct_subst(tmpl, fields, env, sigs, structs);
+                    // Specialize when every type param inferred concretely
+                    let concrete = tmpl.type_params.iter().all(|p| {
+                        matches!(subst.get(p), Some(t) if *t != Type::Unknown)
+                    });
+                    if concrete {
+                        let type_args: Vec<Type> = tmpl
+                            .type_params
+                            .iter()
+                            .map(|p| subst[p].clone())
+                            .collect();
+                        let mangled = mangle_struct_name(name, &type_args);
+                        needed.insert(mangled.clone(), (name.clone(), subst));
+                        *name = mangled;
+                    }
+                }
+            }
+        }
+        Expr::Call(_, args) | Expr::CallExpr(_, args) | Expr::VariantLit { args, .. } => {
+            for a in args {
+                rewrite_struct_lits_in_expr(a, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            rewrite_struct_lits_in_expr(receiver, templates, env, sigs, structs, needed);
+            for a in args {
+                rewrite_struct_lits_in_expr(a, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            rewrite_struct_lits_in_expr(a, templates, env, sigs, structs, needed);
+            rewrite_struct_lits_in_expr(b, templates, env, sigs, structs, needed);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => {
+            rewrite_struct_lits_in_expr(a, templates, env, sigs, structs, needed);
+        }
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            rewrite_struct_lits_in_expr(cond, templates, env, sigs, structs, needed);
+            rewrite_struct_lits_in_expr(then_branch, templates, env, sigs, structs, needed);
+            rewrite_struct_lits_in_expr(else_branch, templates, env, sigs, structs, needed);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            rewrite_struct_lits_in_expr(scrutinee, templates, env, sigs, structs, needed);
+            for a in arms {
+                if let Some(g) = &mut a.guard {
+                    rewrite_struct_lits_in_expr(g, templates, env, sigs, structs, needed);
+                }
+                rewrite_struct_lits_in_expr(&mut a.value, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                rewrite_struct_lits_in_expr(it, templates, env, sigs, structs, needed);
+            }
+        }
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(e) = p {
+                    rewrite_struct_lits_in_expr(e, templates, env, sigs, structs, needed);
+                }
+            }
+        }
+        Expr::Lambda { body, param_types, return_type, .. } => {
+            for t in param_types.iter_mut() {
+                rewrite_type_struct_apps(t, templates, needed);
+            }
+            rewrite_type_struct_apps(return_type, templates, needed);
+            rewrite_struct_lits_in_stmts(body, templates, env, sigs, structs, needed);
+        }
+        _ => {}
+    }
+}
+
+fn rewrite_struct_lits_in_stmts(
+    stmts: &mut [Stmt],
+    templates: &HashMap<String, StructDef>,
+    env: &mut HashMap<String, Type>,
+    sigs: &HashMap<String, (Vec<Type>, Type)>,
+    structs: &HashMap<String, StructDef>,
+    needed: &mut HashMap<String, (String, HashMap<String, Type>)>,
+) {
+    for s in stmts {
+        match s {
+            Stmt::Let(n, e) | Stmt::Const(n, e) => {
+                rewrite_struct_lits_in_expr(e, templates, env, sigs, structs, needed);
+                if let Ok(ty) = expr_type(e, env, sigs, structs) {
+                    env.insert(n.clone(), ty);
+                }
+            }
+            Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                rewrite_struct_lits_in_expr(e, templates, env, sigs, structs, needed);
+            }
+            Stmt::Decl(n, t) => {
+                rewrite_type_struct_apps(t, templates, needed);
+                env.insert(n.clone(), t.clone());
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                rewrite_struct_lits_in_expr(object, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_expr(value, templates, env, sigs, structs, needed);
+            }
+            Stmt::If(c, a, b) => {
+                rewrite_struct_lits_in_expr(c, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_stmts(a, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_stmts(b, templates, env, sigs, structs, needed);
+            }
+            Stmt::While(c, body) => {
+                rewrite_struct_lits_in_expr(c, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::For { start, end, body, var, .. } => {
+                rewrite_struct_lits_in_expr(start, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_expr(end, templates, env, sigs, structs, needed);
+                env.insert(var.clone(), Type::Int);
+                rewrite_struct_lits_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::ForIn { iter, body, var, index, .. } => {
+                rewrite_struct_lits_in_expr(iter, templates, env, sigs, structs, needed);
+                env.insert(var.clone(), Type::Unknown);
+                if let Some(i) = index {
+                    env.insert(i.clone(), Type::Int);
+                }
+                rewrite_struct_lits_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_struct_lits_in_expr(scrutinee, templates, env, sigs, structs, needed);
+                for arm in arms {
+                    if let Some(g) = &mut arm.guard {
+                        rewrite_struct_lits_in_expr(g, templates, env, sigs, structs, needed);
+                    }
+                    rewrite_struct_lits_in_stmts(&mut arm.body, templates, env, sigs, structs, needed);
+                }
+            }
+            Stmt::Defer(body) => {
+                rewrite_struct_lits_in_stmts(body, templates, env, sigs, structs, needed);
+            }
+            Stmt::IfLet { value, yes, no, .. } => {
+                rewrite_struct_lits_in_expr(value, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_stmts(yes, templates, env, sigs, structs, needed);
+                rewrite_struct_lits_in_stmts(no, templates, env, sigs, structs, needed);
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_struct_lits(stmts: &[Stmt], out: &mut Vec<(String, Vec<(String, Expr)>)>) {
+    for s in stmts {
+        match s {
+            Stmt::Let(_, e) | Stmt::Const(_, e) | Stmt::Assign(_, e) | Stmt::Expr(e) | Stmt::Return(e) => {
+                collect_struct_lits_expr(e, out);
+            }
+            Stmt::FieldAssign { object, value, .. } => {
+                collect_struct_lits_expr(object, out);
+                collect_struct_lits_expr(value, out);
+            }
+            Stmt::If(c, a, b) => {
+                collect_struct_lits_expr(c, out);
+                collect_struct_lits(a, out);
+                collect_struct_lits(b, out);
+            }
+            Stmt::While(c, body) => {
+                collect_struct_lits_expr(c, out);
+                collect_struct_lits(body, out);
+            }
+            Stmt::For { start, end, body, .. } => {
+                collect_struct_lits_expr(start, out);
+                collect_struct_lits_expr(end, out);
+                collect_struct_lits(body, out);
+            }
+            Stmt::ForIn { iter, body, .. } => {
+                collect_struct_lits_expr(iter, out);
+                collect_struct_lits(body, out);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_struct_lits_expr(scrutinee, out);
+                for arm in arms {
+                    if let Some(g) = &arm.guard {
+                        collect_struct_lits_expr(g, out);
+                    }
+                    collect_struct_lits(&arm.body, out);
+                }
+            }
+            Stmt::Defer(body) | Stmt::IfLet { yes: body, .. } => collect_struct_lits(body, out),
+            Stmt::IfLet { no, .. } => collect_struct_lits(no, out),
+            Stmt::Decl(_, _) | Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_struct_lits_expr(e: &Expr, out: &mut Vec<(String, Vec<(String, Expr)>)>) {
+    match e {
+        Expr::StructLit { name, fields } => {
+            out.push((name.clone(), fields.clone()));
+            for (_, fe) in fields {
+                collect_struct_lits_expr(fe, out);
+            }
+        }
+        Expr::Call(_, args) | Expr::VariantLit { args, .. } => {
+            for a in args {
+                collect_struct_lits_expr(a, out);
+            }
+        }
+        Expr::CallExpr(c, args) => {
+            collect_struct_lits_expr(c, out);
+            for a in args {
+                collect_struct_lits_expr(a, out);
+            }
+        }
+        Expr::MethodCall { receiver, args, .. } => {
+            collect_struct_lits_expr(receiver, out);
+            for a in args {
+                collect_struct_lits_expr(a, out);
+            }
+        }
+        Expr::Binary(a, _, b) | Expr::Index(a, b) => {
+            collect_struct_lits_expr(a, out);
+            collect_struct_lits_expr(b, out);
+        }
+        Expr::Unary(_, a) | Expr::Try(a) | Expr::Field(a, _) => collect_struct_lits_expr(a, out),
+        Expr::IfExpr {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_struct_lits_expr(cond, out);
+            collect_struct_lits_expr(then_branch, out);
+            collect_struct_lits_expr(else_branch, out);
+        }
+        Expr::MatchExpr { scrutinee, arms } => {
+            collect_struct_lits_expr(scrutinee, out);
+            for a in arms {
+                if let Some(g) = &a.guard {
+                    collect_struct_lits_expr(g, out);
+                }
+                collect_struct_lits_expr(&a.value, out);
+            }
+        }
+        Expr::Tuple(items) => {
+            for it in items {
+                collect_struct_lits_expr(it, out);
+            }
+        }
+        Expr::Lambda { body, .. } => collect_struct_lits(body, out),
+        Expr::Interp(parts) => {
+            for p in parts {
+                if let InterpPart::Expr(e) = p {
+                    collect_struct_lits_expr(e, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn monomorphize_structs(program: &mut Program) -> Result<(), String> {
+    let mut templates: HashMap<String, StructDef> = HashMap::new();
+    for s in &program.structs {
+        if !s.type_params.is_empty() {
+            templates.insert(s.name.clone(), s.clone());
+        }
+    }
+    if templates.is_empty() {
+        return Ok(());
+    }
+
+    let mut specialized: HashMap<String, StructDef> = HashMap::new();
+    let empty_env = HashMap::new();
+    let empty_sigs = HashMap::new();
+    let structs_map: HashMap<String, StructDef> = program
+        .structs
+        .iter()
+        .map(|s| (s.name.clone(), s.clone()))
+        .collect();
+
+    // Collect all struct literals from all functions
+    let mut lits: Vec<(String, Vec<(String, Expr)>)> = Vec::new();
+    for f in &program.functions {
+        collect_struct_lits(&f.body, &mut lits);
+    }
+
+    for (name, fields) in &lits {
+        let Some(tmpl) = templates.get(name) else {
+            continue;
+        };
+        let subst = infer_struct_subst(tmpl, fields, &empty_env, &empty_sigs, &structs_map);
+        if !tmpl
+            .type_params
+            .iter()
+            .all(|p| matches!(subst.get(p), Some(t) if *t != Type::Unknown))
+        {
+            continue;
+        }
+        let type_args: Vec<Type> = tmpl
+            .type_params
+            .iter()
+            .map(|p| subst[p].clone())
+            .collect();
+        let mangled = mangle_struct_name(name, &type_args);
+        if specialized.contains_key(&mangled) {
+            continue;
+        }
+        specialized.insert(mangled, specialize_struct(tmpl, &subst));
+    }
+
+    // Also StructApp in signatures
+    let mut needed_apps: HashMap<String, (String, HashMap<String, Type>)> = HashMap::new();
+    for f in &program.functions {
+        for t in &f.param_types {
+            let mut t = t.clone();
+            rewrite_type_struct_apps(&mut t, &templates, &mut needed_apps);
+        }
+        let mut rt = f.return_type.clone();
+        rewrite_type_struct_apps(&mut rt, &templates, &mut needed_apps);
+    }
+    for (mangled, (tmpl_name, subst)) in needed_apps {
+        if specialized.contains_key(&mangled) {
+            continue;
+        }
+        if let Some(tmpl) = templates.get(&tmpl_name) {
+            specialized.insert(mangled, specialize_struct(tmpl, &subst));
+        }
+    }
+
+    // Rewrite names in bodies + signatures
+    for f in &mut program.functions {
+        let mut needed = HashMap::new();
+        for t in f.param_types.iter_mut() {
+            rewrite_type_struct_apps(t, &templates, &mut needed);
+        }
+        rewrite_type_struct_apps(&mut f.return_type, &templates, &mut needed);
+        let mut env = HashMap::new();
+        let sigs = HashMap::new();
+        rewrite_struct_lits_in_stmts(
+            &mut f.body,
+            &templates,
+            &mut env,
+            &sigs,
+            &structs_map,
+            &mut needed,
+        );
+        for (mangled, (tmpl_name, subst)) in needed {
+            specialized
+                .entry(mangled)
+                .or_insert_with(|| specialize_struct(templates.get(&tmpl_name).unwrap(), &subst));
+        }
+    }
+
+    for (_, s) in specialized {
+        if !program.structs.iter().any(|x| x.name == s.name) {
+            program.structs.push(s);
+        }
     }
     Ok(())
 }

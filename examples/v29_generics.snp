@@ -1,0 +1,17 @@
+// 2.9 — generics: identity, pair, consistency
+fn identity[T](x: T) -> T {
+    return x;
+}
+
+fn first[T](a: T, b: T) -> T {
+    return a;
+}
+
+fn main() -> Int {
+    let a = identity(42);
+    let b = identity(7);
+    let c = first(10, 20);
+    assert(a == 42, "id");
+    assert(c == 10, "first");
+    return a + b + c;
+}

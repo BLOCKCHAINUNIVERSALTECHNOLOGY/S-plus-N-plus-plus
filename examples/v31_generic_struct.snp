@@ -1,0 +1,15 @@
+// 2.11 — generic structs
+struct Box[T] {
+    value: T
+}
+
+struct Pair[T] {
+    left: T,
+    right: T
+}
+
+fn main() -> Int {
+    let b = Box { value: 21 };
+    let p = Pair { left: 10, right: 11 };
+    return b.value + p.left + p.right;
+}

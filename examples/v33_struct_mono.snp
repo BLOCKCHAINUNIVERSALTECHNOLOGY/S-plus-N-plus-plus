@@ -1,0 +1,11 @@
+// 2.13 — generic struct monomorphization
+struct Box[T] {
+    value: T
+}
+
+fn main() -> Int {
+    let a = Box { value: 100 };
+    let b = Box { value: 7 };
+    // both specialize to Box__Int
+    return a.value + b.value;
+}

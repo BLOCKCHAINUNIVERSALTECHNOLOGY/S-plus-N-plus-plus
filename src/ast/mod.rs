@@ -37,8 +37,12 @@ pub enum Type {
     MapOf(Box<Type>, Box<Type>),
     /// User-defined struct type by name
     Struct(String),
+    /// Generic struct application: `Box[Int]`
+    StructApp(String, Vec<Type>),
     /// User-defined enum type by name
     Enum(String),
+    /// Generic enum application: `Option[Int]`
+    EnumApp(String, Vec<Type>),
     /// Generic type parameter name (lightweight generics)
     Generic(String),
     /// Tuple type: (Int, String)
@@ -78,7 +82,15 @@ impl Type {
             Type::Map => "Map".into(),
             Type::MapOf(k, v) => format!("Map[{}, {}]", k.name(), v.name()),
             Type::Struct(n) => n.clone(),
+            Type::StructApp(n, args) => {
+                let inner = args.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ");
+                format!("{n}[{inner}]")
+            }
             Type::Enum(n) => n.clone(),
+            Type::EnumApp(n, args) => {
+                let inner = args.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ");
+                format!("{n}[{inner}]")
+            }
             Type::Generic(n) => n.clone(),
             Type::Tuple(ts) => {
                 let inner = ts.iter().map(|t| t.name()).collect::<Vec<_>>().join(", ");
@@ -212,6 +224,8 @@ pub struct EnumDef {
     pub name: String,
     pub visibility: Visibility,
     pub module_path: Vec<String>,
+    /// `enum Option[T] { None, Some(T) }`
+    pub type_params: Vec<String>,
     /// (variant name, payload field types)
     pub variants: Vec<(String, Vec<Type>)>,
 }
@@ -315,6 +329,8 @@ pub struct StructDef {
     pub name: String,
     pub visibility: Visibility,
     pub module_path: Vec<String>,
+    /// `struct Box[T] { ... }`
+    pub type_params: Vec<String>,
     pub fields: Vec<(String, Type)>,
 }
 

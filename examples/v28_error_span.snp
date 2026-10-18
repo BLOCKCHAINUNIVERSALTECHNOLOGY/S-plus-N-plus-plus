@@ -1,0 +1,5 @@
+// intentional error for span demo — run: snp check examples/v28_error_span.snp
+fn main() -> Int {
+    let a = 1;
+    return missing_name + a;
+}

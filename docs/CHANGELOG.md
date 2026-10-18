@@ -1,5 +1,111 @@
 # Changelog
 
+## [2.13.0] — 2026-10-18 — generic struct monomorphization
+
+### Compiler
+- **`monomorphize_structs`**: for each concrete `Box { value: 42 }` / `Box[Int]`,
+  emits specialized `Box__Int` with concrete field types
+- Struct literals rewritten to specialized names
+- `StructApp` in signatures rewritten to specialized `Struct`
+- Runs after function monomorphization inside `sema::monomorphize`
+
+### Example
+- `examples/v33_struct_mono.snp`
+
+# Changelog
+
+## [2.12.0] — 2026-10-18 — generic enums
+
+### Added
+- `enum Option2[T] { None, Some(T) }` with type parameters
+- `Type::EnumApp(name, args)` for specialized enum types
+- Variant construction infers type args from payloads
+- Same type parameter must be consistent across variant fields
+- `Enum` / `EnumApp` compatible in type checks
+
+### Example
+- `examples/v32_generic_enum.snp`
+
+# Changelog
+
+## [2.11.0] — 2026-10-18 — generic structs
+
+### Added
+- `struct Box[T] { value: T }` with type parameters
+- `Type::StructApp(name, args)` for `Box[Int]` in annotations
+- Struct literal infers type args from fields
+- Same type parameter must be consistent across fields
+- Field access substitutes type parameters
+
+### Example
+- `examples/v31_generic_struct.snp`
+
+# Changelog
+
+## [2.10.0] — 2026-10-16 — monomorphization
+
+### Compiler
+- **`sema::monomorphize`**: for each concrete call to `fn f[T](...)`, emits
+  specialized `f__Type` with concrete param/return types and rewritten body
+- Call sites rewritten to specialized names before HIR/MIR/VM
+- Fixed-point: nested generic calls inside specialized bodies also specialized
+- Wired into `execute` and `build_artifact`
+
+### Example
+- `examples/v30_mono.snp`
+
+# Changelog
+
+## [2.9.0] — 2026-10-16 — generics + traits hardened
+
+### Generics
+- `fn id[T](x: T) -> T` — type params normalized to `Type::Generic`
+- Same `T` must infer to one concrete type (consistency error otherwise)
+- Return type substitutes inferred `T`
+
+### Traits
+- `trait` + `impl Trait for Type` + default method bodies (existing)
+- `where Type: Trait` at definition (concrete) and **call-site** for type params
+- `FN_BOUNDS` / `TRAIT_IMPLS` drive call-site bound checks
+
+### Examples
+- `examples/v29_generics.snp`
+- `examples/v29_traits.snp`
+
+# Changelog
+
+## [2.8.0] — 2026-10-16 — error spans + struct methods
+
+### Diagnostics
+- **`locate_error`**: line/column from message, or from `` `name` `` in source
+- **`annotate(source, err)`**: always adds `--> path:line:col` + caret snippet when possible
+- CLI `snp check` / `snp run` already route through `format_error_report`
+
+### Struct methods
+- **`Self`** type in `impl` methods (params + return)
+- Clearer errors: unknown method lists available `Type.method` names
+- Help text when calling method on non-struct
+
+### Examples
+- `examples/v28_methods.snp`
+- `examples/v28_error_span.snp` (intentional fail for span demo)
+
+# Changelog
+
+## [2.7.0] — 2026-10-16 — stdlib depth
+
+### Added
+- **`list_insert`**, **`list_remove`**, **`list_pop`** (immutable-style new lists)
+- **`str_char_at(s, i)`**
+- **`map_get_or(map, key, default)`**
+- **`abs` / `min` / `max` / `pow` / `sqrt`** work on **Float** (and Int)
+- **`while let`** confirmed (parser desugar → while + match)
+
+### Examples
+- `examples/v27_stdlib.snp`
+
+# Changelog
+
 ## [2.6.0] — 2026-10-15 — Float + parse + tool
 
 ### Added

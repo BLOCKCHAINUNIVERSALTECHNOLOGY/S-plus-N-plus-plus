@@ -1,0 +1,45 @@
+// 2.9 — traits: default methods, where-bounds, method style
+struct Player {
+    hp: Int
+}
+
+struct Enemy {
+    hp: Int
+}
+
+trait Combat {
+    fn damage(self) -> Int;
+    fn tag(self) -> Int {
+        return 1;
+    }
+}
+
+impl Combat for Player {
+    fn damage(self) -> Int {
+        return self.hp;
+    }
+}
+
+impl Combat for Enemy {
+    fn damage(self) -> Int {
+        return self.hp * 2;
+    }
+}
+
+fn fight[T](x: T) -> Int where T: Combat {
+    // monomorphized at typecheck via where + method on concrete type at call site
+    return 0;
+}
+
+fn main() -> Int {
+    let p = Player { hp: 30 };
+    let e = Enemy { hp: 5 };
+    let a = Player.damage(p);
+    let b = Enemy.damage(e);
+    let t = Player.tag(Player { hp: 1 });
+    print(a);
+    print(b);
+    assert(a == 30, "player dmg");
+    assert(b == 10, "enemy dmg");
+    return a + b + t;
+}

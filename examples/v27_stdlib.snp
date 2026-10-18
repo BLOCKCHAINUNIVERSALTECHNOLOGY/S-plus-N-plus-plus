@@ -1,0 +1,26 @@
+// 2.7 — list mutate helpers, float math, while let, str_char_at
+fn main() -> Int {
+    let xs = [10, 30];
+    let ys = list_insert(xs, 1, 20);
+    // ys = [10, 20, 30]
+    let mid = list_get(ys, 1);
+
+    let score = abs(-2.5) + min(1.0, 4.0);
+    let root = sqrt(9.0);
+    let letter = str_char_at("S+N", 0);
+    print(letter);
+
+    let bag = map_set(map(), "hits", 0);
+    let hits = map_get_or(bag, "hits", -1);
+    let miss = map_get_or(bag, "miss", 7);
+
+    let opt = Option.Some(mid);
+    let total = 0;
+    while let Option.Some(n) = opt {
+        total = total + n + hits + miss;
+        opt = Option.None;
+    }
+
+    assert(total == 20 + 0 + 7, "20+7");
+    return floor(score + root) + total;
+}

@@ -1073,7 +1073,10 @@ impl BytecodeVm {
                 if let Some(Value::Int(x)) = args.get(0) {
                     return Ok(Value::Int(x.abs()));
                 }
-                return Err("abs expects Int".into());
+                if let Some(v) = args.get(0).and_then(as_float) {
+                    return Ok(Value::Float(v.abs()));
+                }
+                return Err("abs expects Int or Float".into());
             }
             "__enum_make" => {
                 // args: fields..., enum_name, variant
@@ -1126,25 +1129,90 @@ impl BytecodeVm {
                 if let (Some(Value::Int(a)), Some(Value::Int(b))) = (args.get(0), args.get(1)) {
                     return Ok(Value::Int(*a.min(b)));
                 }
-                return Err("min expects two Int".into());
+                if let (Some(a), Some(b)) = (args.get(0).and_then(as_float), args.get(1).and_then(as_float)) {
+                    return Ok(Value::Float(a.min(b)));
+                }
+                return Err("min expects two Int or Float".into());
             }
             "max" => {
                 if let (Some(Value::Int(a)), Some(Value::Int(b))) = (args.get(0), args.get(1)) {
                     return Ok(Value::Int(*a.max(b)));
                 }
-                return Err("max expects two Int".into());
+                if let (Some(a), Some(b)) = (args.get(0).and_then(as_float), args.get(1).and_then(as_float)) {
+                    return Ok(Value::Float(a.max(b)));
+                }
+                return Err("max expects two Int or Float".into());
             }
             "pow" => {
                 if let (Some(Value::Int(a)), Some(Value::Int(b))) = (args.get(0), args.get(1)) {
+                    if *b < 0 {
+                        return Ok(Value::Float((*a as f64).powi(*b as i32)));
+                    }
                     return Ok(Value::Int(a.pow(*b as u32)));
                 }
-                return Err("pow expects two Int".into());
-            }
-            "sqrt_approx" => {
-                if let Some(Value::Int(x)) = args.get(0) {
-                    return Ok(Value::Int((*x as f64).sqrt() as i64));
+                if let (Some(a), Some(b)) = (args.get(0).and_then(as_float), args.get(1).and_then(as_float)) {
+                    return Ok(Value::Float(a.powf(b)));
                 }
-                return Err("sqrt_approx expects Int".into());
+                return Err("pow expects numeric args".into());
+            }
+            "sqrt" | "sqrt_approx" => {
+                if let Some(v) = args.get(0).and_then(as_float) {
+                    return Ok(Value::Float(v.sqrt()));
+                }
+                return Err("sqrt expects Int or Float".into());
+            }
+            "list_insert" => {
+                if let (Some(Value::List(items)), Some(Value::Int(i)), Some(v)) =
+                    (args.get(0), args.get(1), args.get(2))
+                {
+                    let mut out = (**items).clone();
+                    let idx = (*i).max(0) as usize;
+                    let idx = idx.min(out.len());
+                    out.insert(idx, v.clone());
+                    return Ok(Value::List(std::sync::Arc::new(out)));
+                }
+                return Err("list_insert expects (List, Int, value)".into());
+            }
+            "list_remove" => {
+                if let (Some(Value::List(items)), Some(Value::Int(i))) = (args.get(0), args.get(1)) {
+                    let mut out = (**items).clone();
+                    if *i < 0 || (*i as usize) >= out.len() {
+                        return Err(format!("list_remove index out of bounds: {i}"));
+                    }
+                    out.remove(*i as usize);
+                    return Ok(Value::List(std::sync::Arc::new(out)));
+                }
+                return Err("list_remove expects (List, Int)".into());
+            }
+            "list_pop" => {
+                if let Some(Value::List(items)) = args.get(0) {
+                    let mut out = (**items).clone();
+                    let _ = out.pop();
+                    return Ok(Value::List(std::sync::Arc::new(out)));
+                }
+                return Err("list_pop expects List".into());
+            }
+            "str_char_at" => {
+                if let (Some(Value::Str(s)), Some(Value::Int(i))) = (args.get(0), args.get(1)) {
+                    if *i < 0 {
+                        return Ok(Value::Str(String::new()));
+                    }
+                    return Ok(Value::Str(
+                        s.chars()
+                            .nth(*i as usize)
+                            .map(|c| c.to_string())
+                            .unwrap_or_default(),
+                    ));
+                }
+                return Err("str_char_at expects (String, Int)".into());
+            }
+            "map_get_or" => {
+                if let (Some(Value::Map(m)), Some(Value::Str(k)), Some(default)) =
+                    (args.get(0), args.get(1), args.get(2))
+                {
+                    return Ok(m.get(k).cloned().unwrap_or_else(|| default.clone()));
+                }
+                return Err("map_get_or expects (Map, String, default)".into());
             }
             "now_ms" => {
                 let ms = SystemTime::now()
@@ -2256,6 +2324,7 @@ pub fn build_artifact(src: &str) -> Result<Vec<u8>, String> {
     crate::stdlib::resolve(&program.imports)?;
     sema::expand_trait_defaults(&mut program)?;
     sema::check_program(&program)?;
+    sema::monomorphize(&mut program)?;
     let hir = crate::hir::lower(&program);
     let mut mir = crate::mir::lower(&hir)?;
     crate::mir::optimize(&mut mir);
@@ -2275,6 +2344,7 @@ pub fn execute(src: &str) -> Result<Value, String> {
     sema::expand_trait_defaults(&mut program)?;
     crate::stdlib::resolve(&program.imports)?;
     sema::check_program(&program)?;
+    sema::monomorphize(&mut program)?;
     execute_program(&program)
 }
 
@@ -2901,6 +2971,374 @@ mod tests {
         "#;
         let err = execute(s).unwrap_err();
         assert!(err.contains("moved") || err.contains("borrow"), "got: {err}");
+    }
+
+    #[test]
+    fn loader_path_mono() {
+        let path = std::path::Path::new("examples/v30_mono.snp");
+        match crate::loader::execute_path(path) {
+            Ok(v) => assert_eq!(v, Value::Int(107)),
+            Err(e) => {
+                // show type_params of identity after parse
+                let src = std::fs::read_to_string(path).unwrap();
+                let p = crate::parser::parse_program(&src).unwrap();
+                let id = p.functions.iter().find(|f| f.name == "identity").unwrap();
+                panic!("loader err: {e}\n type_params={:?} param_types={:?}", id.type_params, id.param_types);
+            }
+        }
+    }
+
+    #[test]
+    fn mono_from_example_file() {
+        let s = include_str!("../../examples/v30_mono.snp");
+        assert_eq!(execute(s).unwrap(), Value::Int(107));
+    }
+
+    #[test]
+    fn generic_enum_option() {
+        let s = r#"
+            enum BoxOpt[T] {
+                Empty,
+                Full(T)
+            }
+            fn main() -> Int {
+                let a = BoxOpt.Full(42);
+                match a {
+                    BoxOpt.Full(n) => { return n; }
+                    BoxOpt.Empty => { return 0; }
+                    _ => { return -1; }
+                }
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn generic_enum_result_like() {
+        let s = r#"
+            enum Res[T] {
+                Ok(T),
+                Err(String)
+            }
+            fn main() -> Int {
+                let r = Res.Ok(7);
+                match r {
+                    Res.Ok(n) => { return n + 1; }
+                    Res.Err(msg) => { print(msg); return 0; }
+                    _ => { return -1; }
+                }
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(8));
+    }
+
+    #[test]
+    fn generic_enum_param_mismatch() {
+        let s = r#"
+            enum PairWrap[T] {
+                Both(T, T)
+            }
+            fn main() -> Int {
+                let p = PairWrap.Both(1, true);
+                return 0;
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(
+            err.contains("type parameter") || err.contains("mismatch"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn mono_struct_box_creates_spec() {
+        let s = r#"
+            struct Box[T] { value: T }
+            fn main() -> Int {
+                let b = Box { value: 42 };
+                return b.value;
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        let main = prog.functions.iter().find(|f| f.name == "main").unwrap();
+        let has_lit = format!("{:?}", main.body);
+        assert!(
+            has_lit.contains("StructLit") || has_lit.contains("Box"),
+            "body AST: {has_lit}"
+        );
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let names: Vec<_> = prog.structs.iter().map(|st| st.name.clone()).collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("Box__")),
+            "expected Box__Int specialization, got {names:?} body was {has_lit}"
+        );
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn mono_struct_two_types() {
+        let s = r#"
+            struct Cell[T] { v: T }
+            fn main() -> Int {
+                let a = Cell { v: 1 };
+                let b = Cell { v: true };
+                if b.v { return a.v + 10; }
+                return a.v;
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let specs: Vec<_> = prog
+            .structs
+            .iter()
+            .filter(|st| st.name.starts_with("Cell__"))
+            .map(|st| st.name.clone())
+            .collect();
+        assert!(specs.len() >= 2, "expected Int and Bool cells, got {specs:?}");
+        assert_eq!(execute(s).unwrap(), Value::Int(11));
+    }
+
+    #[test]
+    fn generic_struct_box() {
+        let s = r#"
+            struct Box[T] {
+                value: T
+            }
+            fn main() -> Int {
+                let b = Box { value: 42 };
+                return b.value;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn generic_struct_type_param_consistency() {
+        let s = r#"
+            struct Pair[T] {
+                a: T,
+                b: T
+            }
+            fn main() -> Int {
+                let p = Pair { a: 1, b: true };
+                return 0;
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(err.contains("type parameter") || err.contains("mismatch"), "{err}");
+    }
+
+    #[test]
+    fn generic_struct_with_fn() {
+        let s = r#"
+            struct Box[T] { value: T }
+            fn unwrap_int(b: Box) -> Int {
+                return b.value;
+            }
+            fn main() -> Int {
+                return unwrap_int(Box { value: 9 });
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(9));
+    }
+
+    #[test]
+    fn monomorphize_identity_creates_spec() {
+        let s = r#"
+            fn identity[T](x: T) -> T { return x; }
+            fn main() -> Int {
+                return identity(40) + identity(2);
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let names: Vec<_> = prog.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| n.starts_with("identity__")),
+            "expected specialized identity, got {names:?}"
+        );
+        // specialized should have concrete Int types, no type_params
+        let spec = prog
+            .functions
+            .iter()
+            .find(|f| f.name.starts_with("identity__"))
+            .unwrap();
+        assert!(spec.type_params.is_empty());
+        assert_eq!(spec.param_types, vec![crate::ast::Type::Int]);
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn monomorphize_two_types() {
+        let s = r#"
+            fn id[T](x: T) -> T { return x; }
+            fn main() -> Int {
+                let a = id(1);
+                let b = id(true);
+                if b { return a + 10; }
+                return a;
+            }
+        "#;
+        let mut prog = crate::parser::parse_program(s).unwrap();
+        crate::sema::check_program(&prog).unwrap();
+        crate::sema::monomorphize(&mut prog).unwrap();
+        let specs: Vec<_> = prog
+            .functions
+            .iter()
+            .filter(|f| f.name.starts_with("id__"))
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(specs.len() >= 2, "expected Int and Bool specs, got {specs:?}");
+        assert_eq!(execute(s).unwrap(), Value::Int(11));
+    }
+
+    #[test]
+    fn generics_identity() {
+        let s = r#"
+            fn identity[T](x: T) -> T { return x; }
+            fn main() -> Int {
+                return identity(21) + identity(21);
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(42));
+    }
+
+    #[test]
+    fn generics_mismatch_errors() {
+        let s = r#"
+            fn first[T](a: T, b: T) -> T { return a; }
+            fn main() -> Int {
+                return first(1, true);
+            }
+        "#;
+        let err = execute(s).unwrap_err();
+        assert!(
+            err.contains("type parameter") || err.contains("expects") || err.contains("mismatch"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn trait_where_and_default() {
+        let s = r#"
+            struct Box { n: Int }
+            trait Get {
+                fn get(self) -> Int;
+                fn double(self) -> Int {
+                    return self.n + self.n;
+                }
+            }
+            impl Get for Box {
+                fn get(self) -> Int { return self.n; }
+            }
+            fn main() -> Int {
+                let b = Box { n: 5 };
+                return Box.get(b) + Box.double(Box { n: 5 });
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(15));
+    }
+
+    #[test]
+    fn trait_bound_rejects_non_impl() {
+        let s = r#"
+            struct A { x: Int }
+            struct B { x: Int }
+            trait Mark {
+                fn mark(self) -> Int;
+            }
+            impl Mark for A {
+                fn mark(self) -> Int { return self.x; }
+            }
+            fn only_mark(v: A) -> Int where A: Mark {
+                return A.mark(v);
+            }
+            fn main() -> Int {
+                return only_mark(A { x: 3 });
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn struct_method_heal() {
+        let s = r#"
+            struct Player { hp: Int, name: String }
+            impl Player {
+                fn heal(self, amount: Int) -> Self {
+                    return Player { hp: self.hp + amount, name: self.name };
+                }
+                fn is_alive(self) -> Bool {
+                    return self.hp > 0;
+                }
+            }
+            fn main() -> Int {
+                let p = Player { hp: 10, name: "H" };
+                let p2 = p.heal(5);
+                assert(p2.is_alive(), "alive");
+                return p2.hp;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(15));
+    }
+
+    #[test]
+    fn error_span_annotate_undefined() {
+        let src = "fn main() -> Int {\n  return missing_xyz;\n}";
+        let err = execute(src).unwrap_err();
+        let report = crate::diagnostics::annotate(src, &err);
+        assert!(report.contains("missing_xyz") || report.contains("undefined"), "{report}");
+        assert!(report.contains("-->") || report.contains("^") || report.contains("line"), "{report}");
+    }
+
+    #[test]
+    fn list_insert_remove_pop() {
+        let s = r#"
+            fn main() -> Int {
+                let xs = [1, 3];
+                let ys = list_insert(xs, 1, 2);
+                let zs = list_remove(ys, 0);
+                let ws = list_pop(zs);
+                return list_len(ws) + list_get(ys, 1);
+            }
+        "#;
+        // ys=[1,2,3] len3 get1=2; zs=[2,3]; ws=[2]; return 1+2=3
+        assert_eq!(execute(s).unwrap(), Value::Int(3));
+    }
+
+    #[test]
+    fn float_math_and_char() {
+        let s = r#"
+            fn main() -> Int {
+                let a = abs(-3.5);
+                let b = min(2.0, 9.0);
+                let c = sqrt(16.0);
+                let ch = str_char_at("Hi", 1);
+                assert(ch == "i", "char");
+                return floor(a + b + c);
+            }
+        "#;
+        // 3.5+2+4 = 9.5 -> 9
+        assert_eq!(execute(s).unwrap(), Value::Int(9));
+    }
+
+    #[test]
+    fn while_let_option_smoke() {
+        let s = r#"
+            fn main() -> Int {
+                let x = Option.Some(3);
+                let sum = 0;
+                while let Option.Some(n) = x {
+                    sum = sum + n;
+                    x = Option.None;
+                }
+                return sum;
+            }
+        "#;
+        assert_eq!(execute(s).unwrap(), Value::Int(3));
     }
 
     #[test]

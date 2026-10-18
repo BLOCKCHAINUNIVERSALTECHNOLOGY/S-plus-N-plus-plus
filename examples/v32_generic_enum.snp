@@ -1,0 +1,27 @@
+// 2.12 — generic enums with variants
+enum Option2[T] {
+    None,
+    Some(T)
+}
+
+enum Result2[T] {
+    Ok(T),
+    Err(String)
+}
+
+fn main() -> Int {
+    let a = Option2.Some(10);
+    let b = Result2.Ok(5);
+    let x = 0;
+    match a {
+        Option2.Some(n) => { x = n; }
+        Option2.None => { x = 0; }
+        _ => { x = -1; }
+    }
+    match b {
+        Result2.Ok(n) => { x = x + n; }
+        Result2.Err(msg) => { print(msg); }
+        _ => {}
+    }
+    return x;
+}

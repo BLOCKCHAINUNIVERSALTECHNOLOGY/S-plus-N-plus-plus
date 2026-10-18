@@ -212,8 +212,13 @@ fn resolve_mod_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
 pub fn execute_path(entry: &Path) -> Result<crate::ast::Value, String> {
     let (mut program, _units) = load_entry(entry)?;
     crate::stdlib::resolve(&program.imports)?;
+    crate::sema::expand_uses(&mut program);
+    crate::sema::desugar_match_expressions(&mut program);
+    crate::sema::desugar_if_let(&mut program);
+    crate::sema::desugar_defer(&mut program);
     crate::sema::expand_trait_defaults(&mut program)?;
     crate::sema::check_program(&program)?;
+    crate::sema::monomorphize(&mut program)?;
     execute_program(&program)
 }
 
